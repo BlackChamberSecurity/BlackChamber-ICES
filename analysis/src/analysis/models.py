@@ -1,10 +1,10 @@
 # Copyright (c) 2026 John Earle
 #
-# Licensed under the Business Source License 1.1 (the "License");
+# Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     https://github.com/yourusername/bcem/blob/main/LICENSE
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,16 +15,12 @@
 """
 BCEM Analysis Engine — Data Models
 
-These dataclasses define the data structures flowing through the analysis
-pipeline. They match the shared JSON schema in shared/schemas/email_event.json.
-
-For beginners:
-- EmailEvent   = the email that came in (input)
-- AnalysisResult = what one analyzer found (intermediate)
-- Verdict      = the final decision (output)
+Observation = a single typed key-value fact produced by an analyzer.
+AnalysisResult = all observations from one analyzer for one email.
+Verdict = collection of all analyzer results for one email.
 """
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -50,24 +46,51 @@ class Attachment:
     content_bytes: str = ""      # Base64-encoded
 
 
+# ---------------------------------------------------------------------------
+# Observation model — flexible typed key-value pairs
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Observation:
+    """A single fact produced by an analyzer.
+
+    Types:
+        numeric   — integer or float value (e.g. risk_score=75)
+        pass_fail — "pass" or "fail" (e.g. spf=fail)
+        boolean   — True or False (e.g. sender_mismatch=True)
+        text      — free-form string (e.g. provider=Dropbox)
+    """
+    key: str
+    value: Any
+    type: str = "text"    # "numeric", "pass_fail", "boolean", "text"
+
+    def to_dict(self) -> dict:
+        return {"key": self.key, "value": self.value, "type": self.type}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Observation":
+        return cls(
+            key=data.get("key", ""),
+            value=data.get("value", ""),
+            type=data.get("type", "text"),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Core models
+# ---------------------------------------------------------------------------
+
 @dataclass
 class EmailEvent:
     """
     A fully parsed email entering the analysis pipeline.
-
-    This is what each analyzer receives. Key fields:
-    - sender:      who sent the email (email address string)
-    - subject:     email subject line
-    - body:        email body content
-    - headers:     raw internet message headers (dict)
-    - attachments: list of file attachments
     """
     message_id: str = ""
     user_id: str = ""
     tenant_id: str = ""
     tenant_alias: str = ""
     received_at: str = ""
-    sender: str = ""             # Flattened from.address for convenience
+    sender: str = ""
     sender_name: str = ""
     to: list = field(default_factory=list)
     subject: str = ""
@@ -113,58 +136,59 @@ class EmailEvent:
 
 @dataclass
 class AnalysisResult:
-    """
-    The output of a single analyzer.
+    """All observations from a single analyzer for one email.
 
-    Fields:
-    - analyzer:  name of the analyzer that produced this result
-    - score:     0-100 scale (meaning depends on the analyzer)
-    - findings:  human-readable list of what was found
-    - provider:  SaaS provider name (e.g. "Dropbox") — set by saas_usage analyzer
-    - category:  email category (e.g. "transactional", "marketing") — set by saas_usage analyzer
+    No fixed score or findings — analyzers return typed observations.
     """
     analyzer: str = ""
-    score: int = 0
-    findings: list = field(default_factory=list)
-    provider: str = ""
-    category: str = ""
+    observations: list = field(default_factory=list)  # list[Observation]
+
+    def to_dict(self) -> dict:
+        return {
+            "analyzer": self.analyzer,
+            "observations": [o.to_dict() for o in self.observations],
+        }
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get the value of an observation by key."""
+        for obs in self.observations:
+            if obs.key == key:
+                return obs.value
+        return default
+
+    def get_all(self, key: str) -> list:
+        """Get all values for a given observation key."""
+        return [obs.value for obs in self.observations if obs.key == key]
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AnalysisResult":
+        return cls(
+            analyzer=data.get("analyzer", ""),
+            observations=[
+                Observation.from_dict(o)
+                for o in data.get("observations", [])
+            ],
+        )
 
 
 @dataclass
 class Verdict:
-    """
-    The collection of all analyzer results for an email.
-
-    No aggregated score — each analyzer's result is returned individually.
-
-    Fields:
-    - message_id:    which email this verdict is for
-    - user_id:       whose mailbox it was in
-    - tenant_id:     which M365 tenant
-    - tenant_alias:  human-readable tenant name (e.g. "mainmethod")
-    - results:       list of individual analyzer results
-    """
+    """Collection of all analyzer results for one email."""
     message_id: str = ""
     user_id: str = ""
     tenant_id: str = ""
     tenant_alias: str = ""
-    results: list = field(default_factory=list)
+    sender: str = ""
+    recipients: list = field(default_factory=list)  # list[str]
+    results: list = field(default_factory=list)      # list[AnalysisResult]
 
     def to_dict(self) -> dict:
-        """Serialise verdict to a JSON-safe dict for the queue."""
         return {
             "message_id": self.message_id,
             "user_id": self.user_id,
             "tenant_id": self.tenant_id,
             "tenant_alias": self.tenant_alias,
-            "results": [
-                {
-                    "analyzer": r.analyzer,
-                    "score": r.score,
-                    "findings": r.findings,
-                    "provider": r.provider,
-                    "category": r.category,
-                }
-                for r in self.results
-            ],
+            "sender": self.sender,
+            "recipients": self.recipients,
+            "results": [r.to_dict() for r in self.results],
         }

@@ -1,10 +1,10 @@
 # Copyright (c) 2026 John Earle
 #
-# Licensed under the Business Source License 1.1 (the "License");
+# Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     https://github.com/yourusername/bcem/blob/main/LICENSE
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,36 +15,31 @@
 """
 BCEM Analysis Pipeline
 
-This module orchestrates the analysis of an email:
-1. Auto-discovers all analyzers in the analyzers/ folder
-2. Runs each analyzer on the email
-3. Returns individual results from each analyzer (no aggregation)
+Orchestrates analysis of an email:
+1. Auto-discovers all analyzers (sorted by order)
+2. Runs each analyzer, collecting observations
+3. Returns a Verdict with all results
 """
 import logging
 
 from analysis.analyzers import discover_analyzers
-from analysis.models import EmailEvent, AnalysisResult, Verdict
+from analysis.models import EmailEvent, AnalysisResult, Observation, Verdict
 
 logger = logging.getLogger(__name__)
 
 
 def run_pipeline(email: EmailEvent) -> Verdict:
     """
-    Run all registered analyzers on an email and collect their results.
+    Run all registered analyzers on an email and collect their observations.
 
-    Each analyzer runs independently and its result is returned as-is.
-    No score aggregation — consumers decide how to interpret each result.
-
-    Args:
-        email: The email to analyze.
-
-    Returns:
-        Verdict containing individual results from every analyzer.
+    Each analyzer runs independently and returns typed observations.
+    No score aggregation — consumers (policy engine) interpret results.
     """
     analyzers = discover_analyzers()
     logger.info(
-        "Running %d analyzers on message %s",
+        "Running %d analyzers on message %s (order: %s)",
         len(analyzers), email.message_id,
+        ", ".join(f"{a.name}({a.order})" for a in analyzers),
     )
 
     results: list[AnalysisResult] = []
@@ -54,27 +49,34 @@ def run_pipeline(email: EmailEvent) -> Verdict:
             result = analyzer.analyze(email)
             results.append(result)
 
+            obs_summary = ", ".join(
+                f"{o.key}={o.value}" for o in result.observations
+            )
             logger.info(
-                "Analyzer '%s' scored %d with %d findings (provider=%s, category=%s)",
-                analyzer.name, result.score, len(result.findings),
-                result.provider or "-", result.category or "-",
+                "Analyzer '%s': %d observations [%s]",
+                analyzer.name, len(result.observations), obs_summary,
             )
         except Exception as exc:
             logger.exception(
                 "Analyzer '%s' failed: %s", analyzer.name, exc,
             )
-            # Don't let one broken analyzer kill the whole pipeline
             results.append(AnalysisResult(
                 analyzer=analyzer.name,
-                score=0,
-                findings=[f"Analyzer error: {exc}"],
+                observations=[
+                    Observation(key="error", value=str(exc), type="text"),
+                ],
             ))
+
+    # Extract recipients for policy engine matching
+    recipients = [r.address for r in email.to] if email.to else []
 
     verdict = Verdict(
         message_id=email.message_id,
         user_id=email.user_id,
         tenant_id=email.tenant_id,
         tenant_alias=email.tenant_alias,
+        sender=email.sender,
+        recipients=recipients,
         results=results,
     )
 
@@ -84,4 +86,3 @@ def run_pipeline(email: EmailEvent) -> Verdict:
     )
 
     return verdict
-

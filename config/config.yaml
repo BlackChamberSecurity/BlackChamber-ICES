@@ -16,14 +16,60 @@ tenants:
   #   client_id: "${M365_CLIENT_ID_2}"
   #   client_secret: "${M365_CLIENT_SECRET_2}"
 
-  # Future Google Mail:
-  # - alias: "acme-google"
-  #   provider: "google"
-  #   service_account_json: "${GOOGLE_SA_JSON}"
-  #   domain: "acme.com"
-
 redis:
   url: "${REDIS_URL:-redis://localhost:6379/0}"
   queues:
     emails: "emails"
     verdicts: "verdicts"
+
+# =============================================================================
+# Database
+# =============================================================================
+database:
+  url: "${DATABASE_URL:-postgresql://bcem:bcem_dev@postgres:5432/bcem}"
+
+# =============================================================================
+# Policies — rules that reference observation keys and values
+#
+# Scope fields (all default to "*" = any):
+#   tenant     — tenant alias or "*"
+#   sender     — exact email, domain wildcard ("*@*.xyz"), or "*"
+#   recipients — exact email, list of emails, or "*"
+#
+# Observation match types:
+#   equals   — exact match (pass/fail, text)
+#   gte/lte  — numeric comparison
+#   contains — substring or list membership
+#   exists   — observation key is present
+#
+# Action priority: delete > quarantine > tag > none
+# =============================================================================
+policies:
+  - name: quarantine-dmarc-failure
+    tenant: "*"
+    sender: "*"
+    recipients: "*"
+    when:
+      analyzer: header_auth
+      observation: dmarc
+      equals: "fail"
+    action: quarantine
+
+  - name: tag-suspicious-urls
+    tenant: "*"
+    when:
+      analyzer: url_check
+      observation: ip_urls_found
+      gte: 1
+    action: tag
+
+  - name: quarantine-dangerous-attachment
+    tenant: "*"
+    when:
+      analyzer: attachment_check
+      observation: dangerous_extensions
+      exists: true
+    action: quarantine
+
+  # SaaS usage has no security policy — informational only.
+  # All observations are persisted to Postgres for reporting.

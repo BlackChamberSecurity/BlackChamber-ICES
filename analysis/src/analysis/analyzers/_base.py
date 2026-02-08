@@ -1,10 +1,10 @@
 # Copyright (c) 2026 John Earle
 #
-# Licensed under the Business Source License 1.1 (the "License");
+# Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     https://github.com/yourusername/bcem/blob/main/LICENSE
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,30 +15,32 @@
 """
 BCEM Analyzer Base Class
 
-This is the ONLY file you need to understand to write a new analyzer.
-
 To create a new analyzer:
 1. Create a new .py file in this folder (e.g. my_check.py)
-2. Import BaseAnalyzer and AnalysisResult from this file
+2. Import BaseAnalyzer, AnalysisResult, Observation from this file
 3. Create a class that inherits from BaseAnalyzer
-4. Set name, description, and severity_weight
-5. Implement the analyze() method
+4. Set name, description, and order
+5. Implement the analyze() method — return observations
 6. Save and restart the workers — that's it!
 
 Example:
-    from analysis.analyzers._base import BaseAnalyzer, AnalysisResult
+    from analysis.analyzers._base import BaseAnalyzer, AnalysisResult, Observation
 
     class MyAnalyzer(BaseAnalyzer):
         name = "my_check"
         description = "What this analyzer does"
-        severity_weight = 50
+        order = 40              # lower runs first
 
         def analyze(self, email):
-            # Your logic here
-            return AnalysisResult(analyzer=self.name, score=0, findings=[])
+            return AnalysisResult(
+                analyzer=self.name,
+                observations=[
+                    Observation(key="risk_score", value=0, type="numeric"),
+                ],
+            )
 """
 from abc import ABC, abstractmethod
-from analysis.models import AnalysisResult, EmailEvent
+from analysis.models import AnalysisResult, EmailEvent, Observation
 
 
 class BaseAnalyzer(ABC):
@@ -46,34 +48,21 @@ class BaseAnalyzer(ABC):
     Base class for all email analyzers.
 
     Attributes:
-        name:            Unique identifier for this analyzer (shown in logs)
-        description:     Human-readable description of what it checks
-        severity_weight: How heavily this analyzer's score counts (0-100)
-                        Higher = this analyzer's findings matter more
+        name:        Unique identifier for this analyzer (shown in logs)
+        description: Human-readable description of what it checks
+        order:       Execution order (lower = runs first, default 100)
     """
 
     name: str = "unnamed"
     description: str = ""
-    severity_weight: int = 50
+    order: int = 100
 
     @abstractmethod
     def analyze(self, email: EmailEvent) -> AnalysisResult:
         """
-        Analyze an email and return a result.
-
-        Args:
-            email: The email to analyze. Has these useful fields:
-                   - email.sender       (str)  "user@example.com"
-                   - email.sender_name  (str)  "John Doe"
-                   - email.subject      (str)  "Meeting tomorrow"
-                   - email.body.content (str)  The email body text
-                   - email.headers      (dict) Raw email headers
-                   - email.attachments  (list) File attachments
+        Analyze an email and return observations.
 
         Returns:
-            AnalysisResult with:
-                - analyzer: your analyzer's name
-                - score:    0 (clean) to 100 (definitely malicious)
-                - findings: list of human-readable strings explaining what you found
+            AnalysisResult with a list of Observation key-value pairs.
         """
         ...

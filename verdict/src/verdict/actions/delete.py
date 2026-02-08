@@ -1,10 +1,10 @@
 # Copyright (c) 2026 John Earle
 #
-# Licensed under the Business Source License 1.1 (the "License");
+# Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     https://github.com/yourusername/bcem/blob/main/LICENSE
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,7 +26,7 @@ from verdict.models import VerdictEvent
 class DeleteAction(BaseAction):
     """Soft-delete the message (move to Deleted Items)."""
 
-    name = "delete"
+    action_name = "delete"
     description = "Moves the email to Deleted Items folder"
 
     def build_request(self, verdict: VerdictEvent) -> dict:

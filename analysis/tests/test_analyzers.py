@@ -1,10 +1,10 @@
 # Copyright (c) 2026 John Earle
 #
-# Licensed under the Business Source License 1.1 (the "License");
+# Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     https://github.com/yourusername/bcem/blob/main/LICENSE
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for individual analyzers."""
+"""Tests for individual analyzers — observation model."""
 import pytest
-from analysis.models import EmailEvent, EmailBody, Attachment
+from analysis.models import EmailEvent, EmailBody, Attachment, Observation
 from analysis.analyzers.header_analyzer import HeaderAnalyzer
 from analysis.analyzers.url_analyzer import URLAnalyzer
 from analysis.analyzers.attachment_analyzer import AttachmentAnalyzer
@@ -36,33 +36,42 @@ def _make_email(**kwargs) -> EmailEvent:
     return EmailEvent(**defaults)
 
 
+def _obs_dict(result, key):
+    """Get the value of an observation by key from a result."""
+    return result.get(key)
+
+
 class TestHeaderAnalyzer:
 
     def setup_method(self):
         self.analyzer = HeaderAnalyzer()
+
+    def test_order(self):
+        assert self.analyzer.order == 10
 
     def test_all_pass(self):
         email = _make_email(headers={
             "Authentication-Results": "spf=pass dkim=pass dmarc=pass"
         })
         result = self.analyzer.analyze(email)
-        assert result.score == 0
+        assert result.get("spf") == "pass"
+        assert result.get("dkim") == "pass"
+        assert result.get("dmarc") == "pass"
 
     def test_spf_fail(self):
         email = _make_email(headers={
             "Authentication-Results": "spf=fail dkim=pass dmarc=pass"
         })
         result = self.analyzer.analyze(email)
-        assert result.score > 0
-        assert any("SPF" in f for f in result.findings)
+        assert result.get("spf") == "fail"
+        assert result.get("dkim") == "pass"
 
     def test_dmarc_fail(self):
         email = _make_email(headers={
             "Authentication-Results": "spf=pass dkim=pass dmarc=fail"
         })
         result = self.analyzer.analyze(email)
-        assert result.score >= 40
-        assert any("DMARC" in f for f in result.findings)
+        assert result.get("dmarc") == "fail"
 
     def test_sender_mismatch(self):
         email = _make_email(
@@ -73,7 +82,32 @@ class TestHeaderAnalyzer:
             },
         )
         result = self.analyzer.analyze(email)
-        assert any("match" in f.lower() for f in result.findings)
+        assert result.get("sender_mismatch") is True
+        assert result.get("envelope_domain") == "spoofed.com"
+
+    def test_no_mismatch(self):
+        email = _make_email(
+            sender="user@example.com",
+            headers={
+                "Return-Path": "<user@example.com>",
+                "Authentication-Results": "spf=pass dkim=pass dmarc=pass",
+            },
+        )
+        result = self.analyzer.analyze(email)
+        assert result.get("sender_mismatch") is False
+
+    def test_observations_serialization(self):
+        email = _make_email(headers={
+            "Authentication-Results": "spf=fail dkim=pass dmarc=pass"
+        })
+        result = self.analyzer.analyze(email)
+        d = result.to_dict()
+        assert d["analyzer"] == "header_auth"
+        assert isinstance(d["observations"], list)
+        spf_obs = [o for o in d["observations"] if o["key"] == "spf"]
+        assert len(spf_obs) == 1
+        assert spf_obs[0]["value"] == "fail"
+        assert spf_obs[0]["type"] == "pass_fail"
 
 
 class TestURLAnalyzer:
@@ -81,38 +115,43 @@ class TestURLAnalyzer:
     def setup_method(self):
         self.analyzer = URLAnalyzer()
 
+    def test_order(self):
+        assert self.analyzer.order == 20
+
     def test_no_urls(self):
         email = _make_email(body=EmailBody(content="No links here"))
         result = self.analyzer.analyze(email)
-        assert result.score == 0
+        assert result.get("urls_found") == 0
 
     def test_ip_address_url(self):
         email = _make_email(body=EmailBody(
             content="Visit http://192.168.1.1/login"
         ))
         result = self.analyzer.analyze(email)
-        assert result.score > 0
+        assert result.get("ip_urls_found") >= 1
 
     def test_suspicious_tld(self):
         email = _make_email(body=EmailBody(
             content="Click http://login-verify.xyz/account"
         ))
         result = self.analyzer.analyze(email)
-        assert result.score > 0
+        assert ".xyz" in result.get("suspicious_tlds", "")
 
     def test_url_shortener(self):
         email = _make_email(body=EmailBody(
             content="See http://bit.ly/abc123"
         ))
         result = self.analyzer.analyze(email)
-        assert any("shortener" in f.lower() for f in result.findings)
+        assert result.get("shorteners_found") >= 1
 
     def test_clean_url(self):
         email = _make_email(body=EmailBody(
             content="Visit https://www.google.com"
         ))
         result = self.analyzer.analyze(email)
-        assert result.score == 0
+        assert result.get("ip_urls_found") == 0
+        assert result.get("suspicious_tlds") is None
+        assert result.get("shorteners_found") == 0
 
 
 class TestAttachmentAnalyzer:
@@ -120,35 +159,38 @@ class TestAttachmentAnalyzer:
     def setup_method(self):
         self.analyzer = AttachmentAnalyzer()
 
+    def test_order(self):
+        assert self.analyzer.order == 30
+
     def test_no_attachments(self):
         email = _make_email()
         result = self.analyzer.analyze(email)
-        assert result.score == 0
+        assert result.get("attachment_count") == 0
 
     def test_exe_attachment(self):
         email = _make_email(attachments=[
             Attachment(name="setup.exe", content_type="application/octet-stream", size=50000)
         ])
         result = self.analyzer.analyze(email)
-        assert result.score >= 50
+        assert ".exe" in result.get("dangerous_extensions", "")
 
     def test_safe_attachment(self):
         email = _make_email(attachments=[
             Attachment(name="document.pdf", content_type="application/pdf", size=100000)
         ])
         result = self.analyzer.analyze(email)
-        assert result.score == 0
+        assert result.get("dangerous_extensions") is None
 
     def test_script_attachment(self):
         email = _make_email(attachments=[
             Attachment(name="script.ps1", content_type="text/plain", size=500)
         ])
         result = self.analyzer.analyze(email)
-        assert result.score >= 50
+        assert ".ps1" in result.get("dangerous_extensions", "")
 
     def test_macro_document(self):
         email = _make_email(attachments=[
             Attachment(name="invoice.docm", content_type="application/vnd.ms-word", size=80000)
         ])
         result = self.analyzer.analyze(email)
-        assert result.score >= 50
+        assert ".docm" in result.get("dangerous_extensions", "")

@@ -1,10 +1,10 @@
 # Copyright (c) 2026 John Earle
 #
-# Licensed under the Business Source License 1.1 (the "License");
+# Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     https://github.com/yourusername/bcem/blob/main/LICENSE
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,113 +12,273 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the verdict dispatcher — action routing by score threshold."""
+"""Tests for the policy engine and dispatcher — observation model."""
 import pytest
-from verdict.models import VerdictEvent, VerdictResult
-from verdict.dispatcher import Dispatcher, QUARANTINE_THRESHOLD, TAG_THRESHOLD
+from verdict.models import VerdictEvent, VerdictResult, Observation
+from verdict.policy_engine import PolicyEngine, PolicyDecision
 
 
-def _make_verdict(scores: list[int], **kwargs) -> VerdictEvent:
-    """Helper to create verdicts with analyzer results at given scores."""
-    results = [
-        VerdictResult(analyzer=f"analyzer_{i}", score=s, findings=[f"finding_{i}"])
-        for i, s in enumerate(scores)
-    ]
+def _make_verdict(results: list[VerdictResult] = None, **kwargs) -> VerdictEvent:
+    """Helper to create verdicts with typed observations."""
     defaults = {
         "message_id": "test-msg-001",
         "user_id": "user@example.com",
         "tenant_id": "test-tenant",
-        "results": results,
+        "tenant_alias": "mainmethod",
+        "sender": "sender@example.com",
+        "recipients": ["recipient@example.com"],
+        "results": results or [],
     }
     defaults.update(kwargs)
     return VerdictEvent(**defaults)
 
 
-class TestDispatcher:
+def _header_result(spf="pass", dkim="pass", dmarc="pass") -> VerdictResult:
+    """Helper: header analyzer result."""
+    return VerdictResult(
+        analyzer="header_auth",
+        observations=[
+            Observation(key="spf", value=spf, type="pass_fail"),
+            Observation(key="dkim", value=dkim, type="pass_fail"),
+            Observation(key="dmarc", value=dmarc, type="pass_fail"),
+        ],
+    )
 
-    def setup_method(self):
-        self.dispatcher = Dispatcher()
 
-    def test_all_actions_discovered(self):
-        """All built-in actions should be discovered."""
-        assert "quarantine" in self.dispatcher.actions
-        assert "tag" in self.dispatcher.actions
-        assert "delete" in self.dispatcher.actions
+def _url_result(ip_urls=0, shorteners=0) -> VerdictResult:
+    """Helper: URL analyzer result."""
+    return VerdictResult(
+        analyzer="url_check",
+        observations=[
+            Observation(key="urls_found", value=1, type="numeric"),
+            Observation(key="ip_urls_found", value=ip_urls, type="numeric"),
+            Observation(key="shorteners_found", value=shorteners, type="numeric"),
+        ],
+    )
 
-    def test_no_results_returns_none(self):
-        """Verdicts with no results should return None."""
-        verdict = _make_verdict(scores=[])
-        result = self.dispatcher.dispatch(verdict)
-        assert result is None
 
-    def test_clean_email_no_action(self):
-        """Low-scoring emails should have action='none'."""
-        verdict = _make_verdict(scores=[5, 10, 0])
-        result = self.dispatcher.dispatch(verdict)
-
-        assert result is not None
-        assert result["action"] == "none"
-        assert "request" not in result
-        assert result["max_score"] == 10
-
-    def test_suspicious_email_tags(self):
-        """Emails with max_score >= TAG_THRESHOLD but < QUARANTINE should be tagged."""
-        verdict = _make_verdict(scores=[10, 45, 20])
-        result = self.dispatcher.dispatch(verdict)
-
-        assert result is not None
-        assert result["action"] == "tag"
-        assert "request" in result
-        assert result["request"]["method"] == "PATCH"
-        assert "user@example.com" in result["request"]["url"]
-        assert "BCEM" in str(result["request"]["body"])
-
-    def test_malicious_email_quarantines(self):
-        """Emails with max_score >= QUARANTINE_THRESHOLD should be quarantined."""
-        verdict = _make_verdict(scores=[10, 85, 20])
-        result = self.dispatcher.dispatch(verdict)
-
-        assert result is not None
-        assert result["action"] == "quarantine"
-        assert "request" in result
-        assert result["request"]["method"] == "POST"
-        assert "move" in result["request"]["url"]
-        assert "destinationId" in result["request"]["body"]
-
-    def test_request_has_user_and_message_id(self):
-        """Action requests should reference the correct user and message."""
-        verdict = _make_verdict(
-            scores=[80],
-            user_id="alice@contoso.com",
-            message_id="msg-abc-123",
+def _attachment_result(dangerous=None) -> VerdictResult:
+    """Helper: attachment analyzer result."""
+    obs = [Observation(key="attachment_count", value=1, type="numeric")]
+    if dangerous:
+        obs.append(
+            Observation(key="dangerous_extensions", value=dangerous, type="text")
         )
-        result = self.dispatcher.dispatch(verdict)
+    return VerdictResult(analyzer="attachment_check", observations=obs)
 
-        assert "alice@contoso.com" in result["request"]["url"]
-        assert "msg-abc-123" in result["request"]["url"]
 
-    def test_request_has_unique_id(self):
-        """Each request should have a unique batch ID."""
-        verdict = _make_verdict(scores=[50])
-        r1 = self.dispatcher.dispatch(verdict)
-        r2 = self.dispatcher.dispatch(verdict)
+# ---- PolicyEngine Tests ----
 
-        assert r1["request"]["id"] != r2["request"]["id"]
+class TestPolicyEngine:
 
-    def test_threshold_boundary_tag(self):
-        """Score exactly at TAG_THRESHOLD should trigger tag."""
-        verdict = _make_verdict(scores=[TAG_THRESHOLD])
-        result = self.dispatcher.dispatch(verdict)
-        assert result["action"] == "tag"
+    def test_no_policies(self):
+        engine = PolicyEngine([])
+        verdict = _make_verdict([_header_result(dmarc="fail")])
+        decision = engine.evaluate(verdict)
+        assert decision.action == "none"
 
-    def test_threshold_boundary_quarantine(self):
-        """Score exactly at QUARANTINE_THRESHOLD should trigger quarantine."""
-        verdict = _make_verdict(scores=[QUARANTINE_THRESHOLD])
-        result = self.dispatcher.dispatch(verdict)
-        assert result["action"] == "quarantine"
+    def test_dmarc_fail_quarantine(self):
+        policies = [
+            {
+                "name": "quarantine-dmarc",
+                "tenant": "*",
+                "when": {"analyzer": "header_auth", "observation": "dmarc", "equals": "fail"},
+                "action": "quarantine",
+            }
+        ]
+        engine = PolicyEngine(policies)
+        verdict = _make_verdict([_header_result(dmarc="fail")])
+        decision = engine.evaluate(verdict)
+        assert decision.action == "quarantine"
+        assert decision.policy_name == "quarantine-dmarc"
+        assert decision.matched_analyzer == "header_auth"
 
-    def test_threshold_boundary_below_tag(self):
-        """Score just below TAG_THRESHOLD should trigger no action."""
-        verdict = _make_verdict(scores=[TAG_THRESHOLD - 1])
-        result = self.dispatcher.dispatch(verdict)
-        assert result["action"] == "none"
+    def test_dmarc_pass_no_match(self):
+        policies = [
+            {
+                "name": "quarantine-dmarc",
+                "tenant": "*",
+                "when": {"analyzer": "header_auth", "observation": "dmarc", "equals": "fail"},
+                "action": "quarantine",
+            }
+        ]
+        engine = PolicyEngine(policies)
+        verdict = _make_verdict([_header_result(dmarc="pass")])
+        decision = engine.evaluate(verdict)
+        assert decision.action == "none"
+
+    def test_gte_match(self):
+        policies = [
+            {
+                "name": "tag-ip-urls",
+                "when": {"analyzer": "url_check", "observation": "ip_urls_found", "gte": 1},
+                "action": "tag",
+            }
+        ]
+        engine = PolicyEngine(policies)
+        verdict = _make_verdict([_url_result(ip_urls=2)])
+        decision = engine.evaluate(verdict)
+        assert decision.action == "tag"
+
+    def test_gte_no_match(self):
+        policies = [
+            {
+                "name": "tag-ip-urls",
+                "when": {"analyzer": "url_check", "observation": "ip_urls_found", "gte": 1},
+                "action": "tag",
+            }
+        ]
+        engine = PolicyEngine(policies)
+        verdict = _make_verdict([_url_result(ip_urls=0)])
+        decision = engine.evaluate(verdict)
+        assert decision.action == "none"
+
+    def test_exists_match(self):
+        policies = [
+            {
+                "name": "quarantine-attachment",
+                "when": {"analyzer": "attachment_check", "observation": "dangerous_extensions", "exists": True},
+                "action": "quarantine",
+            }
+        ]
+        engine = PolicyEngine(policies)
+        verdict = _make_verdict([_attachment_result(dangerous=".exe")])
+        decision = engine.evaluate(verdict)
+        assert decision.action == "quarantine"
+
+    def test_exists_no_match(self):
+        policies = [
+            {
+                "name": "quarantine-attachment",
+                "when": {"analyzer": "attachment_check", "observation": "dangerous_extensions", "exists": True},
+                "action": "quarantine",
+            }
+        ]
+        engine = PolicyEngine(policies)
+        verdict = _make_verdict([_attachment_result()])
+        decision = engine.evaluate(verdict)
+        assert decision.action == "none"
+
+    def test_highest_priority_wins(self):
+        """When multiple policies match, highest priority action wins."""
+        policies = [
+            {
+                "name": "tag-rule",
+                "when": {"analyzer": "header_auth", "observation": "spf", "equals": "fail"},
+                "action": "tag",
+            },
+            {
+                "name": "quarantine-rule",
+                "when": {"analyzer": "header_auth", "observation": "dmarc", "equals": "fail"},
+                "action": "quarantine",
+            },
+        ]
+        engine = PolicyEngine(policies)
+        verdict = _make_verdict([_header_result(spf="fail", dmarc="fail")])
+        decision = engine.evaluate(verdict)
+        assert decision.action == "quarantine"
+
+    def test_tenant_filter(self):
+        policies = [
+            {
+                "name": "specific-tenant",
+                "tenant": "mainmethod",
+                "when": {"analyzer": "header_auth", "observation": "spf", "equals": "fail"},
+                "action": "tag",
+            }
+        ]
+        engine = PolicyEngine(policies)
+
+        # Matching tenant
+        verdict = _make_verdict([_header_result(spf="fail")], tenant_alias="mainmethod")
+        assert engine.evaluate(verdict).action == "tag"
+
+        # Non-matching tenant
+        verdict = _make_verdict([_header_result(spf="fail")], tenant_alias="other")
+        assert engine.evaluate(verdict).action == "none"
+
+    def test_sender_wildcard(self):
+        policies = [
+            {
+                "name": "xyz-sender",
+                "sender": "*@*.xyz",
+                "when": {"analyzer": "header_auth", "observation": "spf", "equals": "fail"},
+                "action": "quarantine",
+            }
+        ]
+        engine = PolicyEngine(policies)
+
+        verdict = _make_verdict(
+            [_header_result(spf="fail")],
+            sender="phish@evil.xyz",
+        )
+        assert engine.evaluate(verdict).action == "quarantine"
+
+        verdict = _make_verdict(
+            [_header_result(spf="fail")],
+            sender="legit@company.com",
+        )
+        assert engine.evaluate(verdict).action == "none"
+
+    def test_recipients_filter(self):
+        policies = [
+            {
+                "name": "protect-exec",
+                "recipients": ["ceo@co.com", "cfo@co.com"],
+                "when": {"analyzer": "header_auth", "observation": "spf", "equals": "fail"},
+                "action": "quarantine",
+            }
+        ]
+        engine = PolicyEngine(policies)
+
+        verdict = _make_verdict(
+            [_header_result(spf="fail")],
+            recipients=["ceo@co.com", "assistant@co.com"],
+        )
+        assert engine.evaluate(verdict).action == "quarantine"
+
+        verdict = _make_verdict(
+            [_header_result(spf="fail")],
+            recipients=["nobody@co.com"],
+        )
+        assert engine.evaluate(verdict).action == "none"
+
+    def test_contains_match(self):
+        policies = [
+            {
+                "name": "contains-test",
+                "when": {"analyzer": "url_check", "observation": "suspicious_tlds", "contains": ".xyz"},
+                "action": "tag",
+            }
+        ]
+        engine = PolicyEngine(policies)
+        result = VerdictResult(
+            analyzer="url_check",
+            observations=[
+                Observation(key="suspicious_tlds", value=".xyz,.tk", type="text"),
+            ],
+        )
+        verdict = _make_verdict([result])
+        assert engine.evaluate(verdict).action == "tag"
+
+    def test_verdict_from_dict(self):
+        """VerdictEvent.from_dict should correctly deserialize."""
+        data = {
+            "message_id": "msg-1",
+            "user_id": "user-1",
+            "tenant_id": "t-1",
+            "sender": "a@b.com",
+            "recipients": ["c@d.com"],
+            "results": [
+                {
+                    "analyzer": "header_auth",
+                    "observations": [
+                        {"key": "spf", "value": "fail", "type": "pass_fail"},
+                    ],
+                }
+            ],
+        }
+        event = VerdictEvent.from_dict(data)
+        assert event.sender == "a@b.com"
+        assert len(event.results) == 1
+        assert event.results[0].observations[0].key == "spf"

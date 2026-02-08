@@ -1,10 +1,10 @@
 # Copyright (c) 2026 John Earle
 #
-# Licensed under the Business Source License 1.1 (the "License");
+# Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     https://github.com/yourusername/bcem/blob/main/LICENSE
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,19 +15,21 @@
 """
 BCEM Analysis Engine — Celery Tasks
 
-This module defines the Celery tasks that workers execute. The main task
-is `analyze_email`, which receives a JSON-serialised email event from
-the Go ingestion service, runs the analysis pipeline, and publishes
-the verdict to the verdict queue.
+Dual-write: analysis results go to both Redis (for real-time policy eval)
+and Postgres (for reporting/audit).
 """
 import json
 import logging
+import sys
 
 from analysis.celery_app import app
 from analysis.models import EmailEvent
 from analysis.pipeline import run_pipeline
 
 logger = logging.getLogger(__name__)
+
+# Add shared/ to path for db module
+sys.path.insert(0, "/app/shared")
 
 
 @app.task(
@@ -39,19 +41,13 @@ logger = logging.getLogger(__name__)
 )
 def analyze_email(self, email_event_json: str):
     """
-    Analyze an email event and publish the verdict.
+    Analyze an email event, persist results, and publish for policy evaluation.
 
-    This task is triggered by the Go ingestion service pushing a Celery
-    message to Redis. It:
-    1. Deserialises the email event JSON
-    2. Runs the analysis pipeline (all registered analyzers)
-    3. Publishes the verdict to the verdict queue
-
-    Args:
-        email_event_json: JSON string matching the EmailEvent schema.
+    Dual-write:
+    1. Postgres — system of record (email_events + analysis_results)
+    2. Redis queue — real-time policy evaluation
     """
     try:
-        # Parse the incoming email event
         event_data = json.loads(email_event_json)
         email = EmailEvent.from_dict(event_data)
 
@@ -63,12 +59,26 @@ def analyze_email(self, email_event_json: str):
 
         # Run all analyzers
         verdict = run_pipeline(email)
+        verdict_dict = verdict.to_dict()
 
-        # Publish verdict to the verdict queue
-        from analysis.celery_app import app as celery_app
-        celery_app.send_task(
+        # Include subject in dict for Postgres storage
+        verdict_dict["subject"] = email.subject
+
+        # --- Dual-write: Postgres (best-effort) ---
+        try:
+            from db import get_connection, store_email_event, store_analysis_results
+            with get_connection() as conn:
+                event_id = store_email_event(conn, verdict_dict)
+                store_analysis_results(conn, event_id, verdict_dict)
+                conn.commit()
+            logger.info("Persisted results to Postgres (event_id=%d)", event_id)
+        except Exception as db_exc:
+            logger.warning("Postgres write failed (non-fatal): %s", db_exc)
+
+        # --- Dual-write: Redis queue ---
+        app.send_task(
             "verdict.tasks.execute_verdict",
-            args=[json.dumps(verdict.to_dict())],
+            args=[json.dumps(verdict_dict)],
             queue="verdicts",
         )
 
@@ -79,15 +89,12 @@ def analyze_email(self, email_event_json: str):
 
         return {
             "message_id": verdict.message_id,
-            "results": [
-                {"analyzer": r.analyzer, "score": r.score, "provider": r.provider, "category": r.category}
-                for r in verdict.results
-            ],
+            "analyzers": [r.analyzer for r in verdict.results],
         }
 
     except json.JSONDecodeError as exc:
         logger.error("Invalid JSON in email event: %s", exc)
-        raise  # Don't retry on bad data
+        raise
 
     except Exception as exc:
         logger.exception("Failed to analyze email: %s", exc)
