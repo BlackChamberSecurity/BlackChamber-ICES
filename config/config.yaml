@@ -1,0 +1,29 @@
+# =============================================================================
+# BCEM Configuration
+# =============================================================================
+
+tenants:
+  - alias: "mainmethod"
+    provider: "m365"
+    tenant_id: "${M365_TENANT_ID_1}"
+    client_id: "${M365_CLIENT_ID_1}"
+    client_secret: "${M365_CLIENT_SECRET_1}"
+
+  # Add more tenants here:
+  # - alias: "acme-corp"
+  #   provider: "m365"
+  #   tenant_id: "${M365_TENANT_ID_2}"
+  #   client_id: "${M365_CLIENT_ID_2}"
+  #   client_secret: "${M365_CLIENT_SECRET_2}"
+
+  # Future Google Mail:
+  # - alias: "acme-google"
+  #   provider: "google"
+  #   service_account_json: "${GOOGLE_SA_JSON}"
+  #   domain: "acme.com"
+
+redis:
+  url: "${REDIS_URL:-redis://localhost:6379/0}"
+  queues:
+    emails: "emails"
+    verdicts: "verdicts"

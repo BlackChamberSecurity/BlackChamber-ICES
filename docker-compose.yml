@@ -1,0 +1,76 @@
+version: "3.9"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Redis — single broker for Celery + inter-service queue
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
+  # ---------------------------------------------------------------------------
+  # Go Ingestion Service — M365 webhooks + email fetching
+  # ---------------------------------------------------------------------------
+  ingestion:
+    build: ./ingestion
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - ./config/config.yaml:/app/config/config.yaml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Python Analysis Workers — Celery workers processing email analysis
+  # ---------------------------------------------------------------------------
+  analysis-worker:
+    build: ./analysis
+    command: >
+      celery -A analysis.celery_app worker -Q emails -l info --concurrency=${ANALYSIS_WORKERS:-4}
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Python Verdict Workers — Celery workers executing actions via Graph API
+  # ---------------------------------------------------------------------------
+  verdict-worker:
+    build: ./verdict
+    command: >
+      celery -A verdict.celery_app worker -Q verdicts -l info --concurrency=${VERDICT_WORKERS:-2}
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Celery Beat — periodic task scheduler (batch flush timer)
+  # ---------------------------------------------------------------------------
+  verdict-beat:
+    build: ./verdict
+    command: >
+      celery -A verdict.celery_app beat -l info
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  redis_data:

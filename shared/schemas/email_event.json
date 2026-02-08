@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EmailEvent",
+  "description": "Contract between Go ingestion and Python analysis. Any email entering the pipeline MUST conform to this schema.",
+  "type": "object",
+  "required": ["message_id", "user_id", "tenant_id", "received_at", "from", "to", "subject"],
+  "properties": {
+    "message_id": {
+      "type": "string",
+      "description": "M365 message ID (used for Graph API actions)"
+    },
+    "user_id": {
+      "type": "string",
+      "description": "M365 user ID or email of the mailbox owner"
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "M365 tenant ID"
+    },
+    "received_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the email was received"
+    },
+    "from": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "address": { "type": "string", "format": "email" }
+      },
+      "required": ["address"]
+    },
+    "to": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "address": { "type": "string", "format": "email" }
+        },
+        "required": ["address"]
+      }
+    },
+    "subject": {
+      "type": "string"
+    },
+    "body": {
+      "type": "object",
+      "properties": {
+        "content_type": {
+          "type": "string",
+          "enum": ["text", "html"]
+        },
+        "content": {
+          "type": "string"
+        }
+      }
+    },
+    "headers": {
+      "type": "object",
+      "description": "Raw internet message headers as key-value pairs",
+      "additionalProperties": { "type": "string" }
+    },
+    "attachments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "content_type": { "type": "string" },
+          "size": { "type": "integer" },
+          "content_bytes": {
+            "type": "string",
+            "description": "Base64-encoded file content"
+          }
+        },
+        "required": ["name", "content_type", "size"]
+      }
+    }
+  }
+}

@@ -1,0 +1,47 @@
+# =============================================================================
+# BCEM Test Runner — Everything runs in containers
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml run analysis-test
+#   docker compose -f docker-compose.test.yml run verdict-test
+#   docker compose -f docker-compose.test.yml run ingestion-test
+#
+#   # Run all tests:
+#   docker compose -f docker-compose.test.yml up --build --abort-on-container-exit
+# =============================================================================
+
+services:
+  # --- Analysis Engine Tests ---
+  analysis-test:
+    build: ./analysis
+    command: pytest tests/ -v --tb=short
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # --- Verdict Worker Tests ---
+  verdict-test:
+    build: ./verdict
+    command: pytest tests/ -v --tb=short
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # --- Go Ingestion Tests (uses multi-stage build) ---
+  ingestion-test:
+    build:
+      context: ./ingestion
+      target: test
+
+  # --- Redis (needed by Python tests) ---
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 2s
+      timeout: 2s
+      retries: 5

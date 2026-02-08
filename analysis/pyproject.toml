@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bcem-analysis"
+version = "0.1.0"
+description = "BCEM Email Security Scanner — Analysis Engine"
+requires-python = ">=3.10"
+dependencies = [
+    "celery[redis]>=5.3,<6",
+    "redis>=5.0,<6",
+    "pyyaml>=6.0",
+    "transformers>=4.35,<5",
+    "torch>=2.1",
+    "sentencepiece>=0.1.99",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
