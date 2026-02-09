@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-BCEM Analyzer Base Class
+BlackChamber ICES Analyzer Base Class
 
 To create a new analyzer:
 1. Create a new .py file in this folder (e.g. my_check.py)

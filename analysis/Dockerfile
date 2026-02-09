@@ -15,7 +15,7 @@ COPY analysis/tests/ tests/
 RUN pip install --no-cache-dir -e ".[dev]"
 
 # Pre-download the NLP model so it's cached in the image
-RUN python -c "from transformers import pipeline; pipeline('zero-shot-classification', model='typeform/distilbert-base-uncased-mnli')"
+RUN python -c "from transformers import pipeline; pipeline('zero-shot-classification', model='cross-encoder/nli-distilroberta-base')"
 
 # Default command (overridden by docker-compose)
 CMD ["celery", "-A", "analysis.celery_app", "worker", "-Q", "emails", "-l", "info"]

@@ -15,46 +15,16 @@
 """
 BlackChamber ICES Verdict Worker — Data Models
 
-These models represent the analysis results as they arrive from the
-analysis worker via the Redis queue for policy evaluation.
+All canonical data models live in ices_shared.models. This module
+re-exports them for backward compatibility.
 """
 
-from dataclasses import dataclass, field
-from typing import Any
+from ices_shared.models import (
+    Observation,
+    AnalysisResult,
+    Verdict,
+)
 
-from ices_shared.models import Observation, AnalysisResult
-
-# Backward-compatible alias — existing code references VerdictResult
+# Backward-compatible aliases
 VerdictResult = AnalysisResult
-
-
-@dataclass
-class VerdictEvent:
-    """A complete analysis result arriving for policy evaluation.
-
-    This is deserialized from the Redis queue and contains everything
-    the policy engine needs to make a decision.
-    """
-
-    message_id: str = ""
-    user_id: str = ""
-    tenant_id: str = ""
-    tenant_alias: str = ""
-    sender: str = ""
-    recipients: list = field(default_factory=list)
-    results: list = field(default_factory=list)  # list[VerdictResult]
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "VerdictEvent":
-        return cls(
-            message_id=data.get("message_id", ""),
-            user_id=data.get("user_id", ""),
-            tenant_id=data.get("tenant_id", ""),
-            tenant_alias=data.get("tenant_alias", ""),
-            sender=data.get("sender", ""),
-            recipients=data.get("recipients", []),
-            results=[
-                VerdictResult.from_dict(r)
-                for r in data.get("results", [])
-            ],
-        )
+VerdictEvent = Verdict

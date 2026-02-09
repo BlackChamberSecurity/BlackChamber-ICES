@@ -13,49 +13,26 @@
 # limitations under the License.
 
 """
-BCEM Analysis Engine — Data Models
+BlackChamber ICES Analysis Engine — Data Models
 
-Observation = a single typed key-value fact produced by an analyzer.
-AnalysisResult = all observations from one analyzer for one email.
-Verdict = collection of all analyzer results for one email.
+All canonical data models live in ices_shared.models. This module
+re-exports them for backward compatibility and adds the pipeline-specific
+EmailEvent dataclass.
 """
 from dataclasses import dataclass, field
-from typing import Any
 
-from ices_shared.models import Observation, AnalysisResult
-
-
-@dataclass
-class EmailAddress:
-    """An email sender or recipient."""
-    address: str
-    name: str = ""
-
-
-@dataclass
-class EmailBody:
-    """The content of an email."""
-    content_type: str = "text"   # "text" or "html"
-    content: str = ""
-
-
-@dataclass
-class Attachment:
-    """An email attachment."""
-    name: str = ""
-    content_type: str = ""
-    size: int = 0
-    content_bytes: str = ""      # Base64-encoded
-
+from ices_shared.models import (
+    Observation,
+    AnalysisResult,
+    EmailAddress,
+    EmailBody,
+    Attachment,
+    Verdict,
+)
 
 
 # ---------------------------------------------------------------------------
-# Core models
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Core models
+# EmailEvent — pipeline-specific input model
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -110,26 +87,3 @@ class EmailEvent:
             headers=data.get("headers", {}),
             attachments=[Attachment(**a) for a in attachments_data],
         )
-
-
-@dataclass
-class Verdict:
-    """Collection of all analyzer results for one email."""
-    message_id: str = ""
-    user_id: str = ""
-    tenant_id: str = ""
-    tenant_alias: str = ""
-    sender: str = ""
-    recipients: list = field(default_factory=list)  # list[str]
-    results: list = field(default_factory=list)      # list[AnalysisResult]
-
-    def to_dict(self) -> dict:
-        return {
-            "message_id": self.message_id,
-            "user_id": self.user_id,
-            "tenant_id": self.tenant_id,
-            "tenant_alias": self.tenant_alias,
-            "sender": self.sender,
-            "recipients": self.recipients,
-            "results": [r.to_dict() for r in self.results],
-        }

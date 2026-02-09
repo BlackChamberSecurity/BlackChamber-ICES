@@ -26,15 +26,18 @@ import (
 )
 
 // Fetcher retrieves full email messages from the Graph API.
+// It holds a per-tenant map of authenticated HTTP clients so the correct
+// OAuth token is used for each tenant.
 type Fetcher struct {
-	httpClient   *http.Client
+	graphClients map[string]*http.Client // keyed by tenant alias
 	graphBaseURL string
 }
 
 // NewFetcher creates a Graph API message fetcher.
-func NewFetcher(httpClient *http.Client, graphBaseURL string) *Fetcher {
+// graphClients maps tenant alias → authenticated *http.Client.
+func NewFetcher(graphClients map[string]*http.Client, graphBaseURL string) *Fetcher {
 	return &Fetcher{
-		httpClient:   httpClient,
+		graphClients: graphClients,
 		graphBaseURL: graphBaseURL,
 	}
 }
@@ -42,6 +45,12 @@ func NewFetcher(httpClient *http.Client, graphBaseURL string) *Fetcher {
 // FetchMessage retrieves the full email content for a given user and message ID.
 // Returns an EmailEvent ready for enqueuing to the analysis pipeline.
 func (f *Fetcher) FetchMessage(ctx context.Context, userID, messageID, tenantID, tenantAlias string) (*models.EmailEvent, error) {
+	// Select the correct per-tenant Graph client
+	client, ok := f.graphClients[tenantAlias]
+	if !ok {
+		return nil, fmt.Errorf("no Graph client for tenant alias %q", tenantAlias)
+	}
+
 	// Build Graph API URL — select only the fields we need
 	url := fmt.Sprintf("%s/users/%s/messages/%s?$select=id,subject,from,toRecipients,body,internetMessageHeaders,hasAttachments",
 		f.graphBaseURL, userID, messageID)
@@ -53,7 +62,7 @@ func (f *Fetcher) FetchMessage(ctx context.Context, userID, messageID, tenantID,
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Prefer", "outlook.body-content-type=\"text\"")
 
-	resp, err := f.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch message: %w", err)
 	}

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-BCEM Analysis Pipeline
+BlackChamber ICES Analysis Pipeline
 
 Orchestrates analysis of an email:
 1. Auto-discovers all analyzers (sorted by order)

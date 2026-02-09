@@ -24,6 +24,7 @@ import os
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS email_events (
     tenant_id       TEXT NOT NULL,
     tenant_alias    TEXT DEFAULT '',
     sender          TEXT DEFAULT '',
+    recipients      JSONB DEFAULT '[]',
     subject         TEXT DEFAULT '',
     received_at     TIMESTAMPTZ,
     created_at      TIMESTAMPTZ DEFAULT NOW()
@@ -53,6 +55,7 @@ CREATE TABLE IF NOT EXISTS analysis_results (
     tenant_id       TEXT NOT NULL,
     analyzer        TEXT NOT NULL,
     observations    JSONB DEFAULT '[]',
+    processing_time_ms DOUBLE PRECISION DEFAULT 0.0,
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -76,33 +79,34 @@ CREATE INDEX IF NOT EXISTS idx_events_tenant
     ON email_events(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_events_message
     ON email_events(message_id);
-
-CREATE TABLE IF NOT EXISTS subscriptions (
-    id                BIGSERIAL PRIMARY KEY,
-    subscription_id   TEXT NOT NULL UNIQUE,
-    user_id           TEXT NOT NULL,
-    tenant_id         TEXT NOT NULL,
-    tenant_alias      TEXT DEFAULT '',
-    client_state      TEXT NOT NULL,
-    expires_at        TIMESTAMPTZ NOT NULL,
-    delta_link        TEXT DEFAULT '',
-    last_notification TIMESTAMPTZ,
-    last_delta_sync   TIMESTAMPTZ,
-    status            TEXT DEFAULT 'active',
-    created_at        TIMESTAMPTZ DEFAULT NOW(),
-    updated_at        TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(tenant_id, user_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_subs_tenant ON subscriptions(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_subs_expires ON subscriptions(expires_at);
-CREATE INDEX IF NOT EXISTS idx_subs_status ON subscriptions(status);
 """
+# ---------------------------------------------------------------------------
+# Connection pool (singleton, created on first use)
+# ---------------------------------------------------------------------------
+_pool: ConnectionPool | None = None
 
 
-def get_connection() -> psycopg.Connection:
-    """Return a new Postgres connection."""
-    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+def _get_pool() -> ConnectionPool:
+    """Return (and lazily create) the shared connection pool."""
+    global _pool
+    if _pool is None:
+        _pool = ConnectionPool(
+            conninfo=DATABASE_URL,
+            min_size=2,
+            max_size=10,
+            kwargs={"row_factory": dict_row},
+        )
+    return _pool
+
+
+def get_connection():
+    """Borrow a connection from the pool (use as context manager).
+
+    Usage:
+        with get_connection() as conn:
+            conn.execute(...)
+    """
+    return _get_pool().connection()
 
 
 def init_schema():
@@ -124,8 +128,8 @@ def store_email_event(conn, verdict_dict: dict) -> int:
     """Insert an email_events row and return the generated id."""
     cur = conn.execute(
         """
-        INSERT INTO email_events (message_id, user_id, tenant_id, tenant_alias, sender, subject)
-        VALUES (%(message_id)s, %(user_id)s, %(tenant_id)s, %(tenant_alias)s, %(sender)s, %(subject)s)
+        INSERT INTO email_events (message_id, user_id, tenant_id, tenant_alias, sender, recipients, subject)
+        VALUES (%(message_id)s, %(user_id)s, %(tenant_id)s, %(tenant_alias)s, %(sender)s, %(recipients)s, %(subject)s)
         RETURNING id
         """,
         {
@@ -134,6 +138,7 @@ def store_email_event(conn, verdict_dict: dict) -> int:
             "tenant_id": verdict_dict.get("tenant_id", ""),
             "tenant_alias": verdict_dict.get("tenant_alias", ""),
             "sender": verdict_dict.get("sender", ""),
+            "recipients": json.dumps(verdict_dict.get("recipients", [])),
             "subject": verdict_dict.get("subject", ""),
         },
     )
@@ -150,8 +155,8 @@ def store_analysis_results(conn, email_event_id: int, verdict_dict: dict):
         conn.execute(
             """
             INSERT INTO analysis_results
-                (email_event_id, message_id, tenant_id, analyzer, observations)
-            VALUES (%(eid)s, %(mid)s, %(tid)s, %(analyzer)s, %(observations)s)
+                (email_event_id, message_id, tenant_id, analyzer, observations, processing_time_ms)
+            VALUES (%(eid)s, %(mid)s, %(tid)s, %(analyzer)s, %(observations)s, %(ptms)s)
             """,
             {
                 "eid": email_event_id,
@@ -159,6 +164,7 @@ def store_analysis_results(conn, email_event_id: int, verdict_dict: dict):
                 "tid": tenant_id,
                 "analyzer": result.get("analyzer", ""),
                 "observations": json.dumps(result.get("observations", [])),
+                "ptms": result.get("processing_time_ms", 0.0),
             },
         )
 

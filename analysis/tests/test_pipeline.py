@@ -107,7 +107,7 @@ class TestPipeline:
         assert ".exe" in att_results[0].get("dangerous_extensions", "")
 
     def test_saas_provider_identified(self):
-        """A known SaaS sender should produce provider observation."""
+        """A known SaaS sender should produce provider and is_saas observations."""
         email = _make_email(
             sender="noreply@dropbox.com",
             subject="Your Dropbox storage is 90% full",
@@ -116,6 +116,8 @@ class TestPipeline:
 
         saas_results = [r for r in verdict.results if r.analyzer == "saas_usage"]
         assert len(saas_results) == 1
+        assert saas_results[0].get("is_saas") is True
+        assert saas_results[0].get("saas_confidence") == "known"
         assert saas_results[0].get("provider") == "Dropbox"
         assert saas_results[0].get("confidence") is not None
 

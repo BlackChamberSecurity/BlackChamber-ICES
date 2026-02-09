@@ -3,15 +3,14 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ices-shared"
+name = "ices-webui"
 version = "0.1.0"
-description = "BlackChamber ICES — Shared models, DB helpers, and Celery defaults"
+description = "BlackChamber ICES — WebUI Dashboard"
 requires-python = ">=3.10"
 dependencies = [
-    "psycopg[binary]>=3.1,<4",
-    "psycopg_pool>=3.1,<4",
-    "redis>=5.0,<6",
-    "pyyaml>=6.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-jose[cryptography]>=3.3",
 ]
 
 [tool.setuptools.packages.find]

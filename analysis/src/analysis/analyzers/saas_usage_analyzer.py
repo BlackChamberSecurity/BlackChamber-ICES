@@ -15,17 +15,24 @@
 """
 Analyzer: SaaS Usage Classification
 
-NLP-first architecture:
-  1. Header signals — structured metadata NLP can't see
-  2. NLP classification — zero-shot transformer classifies email type
-  3. Vendor enrichment — match sender domain against known vendor dataset
+Domain-first architecture (CPU-optimized):
+  1. Header signals  — structured metadata (always collected)
+  2. Domain lookup   — O(1) match against known SaaS vendor catalog
+  3. NLP (gated)     — zero-shot classifier ONLY for known SaaS vendors
+
+The NLP step is a simple binary:
+  - "usage"     — email indicates active SaaS use (account changes, OTP,
+                   billing, alerts, reports, etc.)
+  - "marketing" — newsletters, promotional content
 
 Observations produced:
-    category          (text)     — "transactional", "marketing", "unknown"
-    confidence        (numeric)  — NLP classification confidence (0-100)
+    is_saas           (boolean)  — sender identified as SaaS provider
+    saas_confidence   (text)     — "known" (domain match)
     provider          (text)     — matched SaaS vendor name
     provider_category (text)     — vendor's SaaS category
     provider_org      (text)     — vendor's parent organization
+    category          (text)     — "usage", "marketing", "unknown" (SaaS only)
+    confidence        (numeric)  — NLP confidence 0-100 (SaaS only)
     list_unsubscribe  (boolean)  — List-Unsubscribe header present
     auto_submitted    (boolean)  — Auto-Submitted header present
     bulk_precedence   (boolean)  — Precedence=bulk/list header present
@@ -43,6 +50,9 @@ from analysis.models import AnalysisResult, EmailEvent, Observation
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# HTML text extraction
+# ---------------------------------------------------------------------------
 class _HTMLTextExtractor(HTMLParser):
     """Extract plain text from HTML, stripping all tags."""
     def __init__(self):
@@ -129,40 +139,84 @@ def _get_nlp_classifier():
     return _nlp_classifier if _nlp_classifier is not False else None
 
 
+
+
+_MARKETING_MAILERS = frozenset({
+    "mailchimp", "sendgrid", "marketo", "hubspot",
+    "pardot", "constant contact", "brevo", "mailgun",
+    "customer.io", "iterable", "klaviyo",
+})
+
+
+# ---------------------------------------------------------------------------
+# Domain normalization — canonical provider name from sender domain
+# ---------------------------------------------------------------------------
+_MULTI_PART_TLDS = frozenset({
+    "co.uk", "co.in", "com.au", "co.jp", "co.kr", "com.br",
+    "co.nz", "co.za", "com.mx", "com.sg", "com.hk",
+})
+
+
+def _extract_root_domain(domain: str) -> str:
+    """Extract the registrable root domain, e.g. 'mail.creditkarma.com' → 'creditkarma.com'."""
+    parts = domain.lower().strip().split(".")
+    if len(parts) <= 2:
+        return domain.lower().strip()
+
+    # Check for multi-part TLDs (e.g. co.uk)
+    last_two = ".".join(parts[-2:])
+    if last_two in _MULTI_PART_TLDS and len(parts) >= 3:
+        return ".".join(parts[-3:])
+
+    return ".".join(parts[-2:])
+
+
 # ---------------------------------------------------------------------------
 # Analyzer
 # ---------------------------------------------------------------------------
 class SaaSUsageAnalyzer(BaseAnalyzer):
-    """Classify emails as SaaS usage indicators vs marketing noise."""
+    """Classify emails as SaaS usage indicators vs marketing noise.
+
+    Pipeline:
+      1. Header signals — always collected
+      2. Domain lookup  — instant match against known vendor catalog
+      3. NLP classify   — only runs for known SaaS vendors
+    """
 
     name = "saas_usage"
-    description = "Classifies emails as transactional SaaS usage vs marketing noise using NLP"
+    description = "Identifies SaaS senders and classifies email as usage vs marketing"
     order = 50  # NLP — most expensive, runs last
 
     def analyze(self, email: EmailEvent) -> AnalysisResult:
         observations = []
 
-        # --- Step 1: Header signals ---
+        # --- Step 1: Header signals (always collected) ---
         observations.extend(self._collect_header_observations(email))
 
-        # --- Step 2: NLP classification ---
-        category, confidence = self._nlp_classify(email)
-        observations.append(Observation(key="category", value=category, type="text"))
-        observations.append(Observation(key="confidence", value=confidence, type="numeric"))
+        # --- Step 2: Domain lookup (O(1)) ---
+        is_saas = False
+        vendor_obs = self._vendor_lookup(email.sender)
 
-        # --- Step 3: Adjust with headers ---
-        category, confidence = self._adjust_with_headers(
-            category, confidence, observations
-        )
-        # Update the category/confidence observations with adjusted values
-        for obs in observations:
-            if obs.key == "category":
-                obs.value = category
-            elif obs.key == "confidence":
-                obs.value = confidence
+        if vendor_obs:
+            is_saas = True
+            observations.extend(vendor_obs)
 
-        # --- Step 4: Vendor enrichment ---
-        observations.extend(self._vendor_observations(email.sender))
+        # --- Step 3: Emit is_saas determination ---
+        observations.append(Observation(key="is_saas", value=is_saas, type="boolean"))
+        if is_saas:
+            observations.append(
+                Observation(key="saas_confidence", value="known", type="text")
+            )
+
+        # --- Step 4: NLP classification (ONLY for known SaaS vendors) ---
+        if is_saas:
+            category, confidence = self._nlp_classify(email)
+            # Adjust with header signals
+            category, confidence = self._adjust_with_headers(
+                category, confidence, observations
+            )
+            observations.append(Observation(key="category", value=category, type="text"))
+            observations.append(Observation(key="confidence", value=confidence, type="numeric"))
 
         return AnalysisResult(analyzer=self.name, observations=observations)
 
@@ -190,11 +244,7 @@ class SaaSUsageAnalyzer(BaseAnalyzer):
             )
 
         x_mailer = headers.get("X-Mailer", "").lower()
-        marketing_mailers = [
-            "mailchimp", "sendgrid", "marketo", "hubspot",
-            "pardot", "constant contact",
-        ]
-        for mailer in marketing_mailers:
+        for mailer in _MARKETING_MAILERS:
             if mailer in x_mailer:
                 observations.append(
                     Observation(key="marketing_mailer", value=mailer, type="text")
@@ -203,9 +253,43 @@ class SaaSUsageAnalyzer(BaseAnalyzer):
 
         return observations
 
+    # ----- Domain lookup (O(1)) -----
+
+    def _vendor_lookup(self, sender: str) -> list[Observation]:
+        """Check sender domain against known SaaS vendor catalog."""
+        if not sender:
+            return []
+
+        vendor_data = _load_vendor_data()
+        domain_index = vendor_data.get("domain_index", {})
+        apps = vendor_data.get("apps", {})
+
+        domain = sender.lower().split("@")[-1] if "@" in sender else sender.lower()
+
+        # Walk up the domain hierarchy for a match
+        app_id = None
+        parts = domain.split(".")
+        for i in range(len(parts) - 1):
+            candidate = ".".join(parts[i:])
+            if candidate in domain_index:
+                app_id = domain_index[candidate]
+                break
+
+        if app_id and app_id in apps:
+            app = apps[app_id]
+            return [
+                Observation(key="provider", value=app.get("name", ""), type="text"),
+                Observation(key="provider_category", value=app.get("category", ""), type="text"),
+                Observation(key="provider_org", value=app.get("organization", "unknown"), type="text"),
+            ]
+
+        return []
+
+
     # ----- NLP classification -----
 
     def _nlp_classify(self, email: EmailEvent) -> tuple[str, int]:
+        """Classify a SaaS email as usage or marketing using zero-shot NLP."""
         classifier = _get_nlp_classifier()
         if classifier is None:
             return "unknown", 0
@@ -218,7 +302,7 @@ class SaaSUsageAnalyzer(BaseAnalyzer):
         text += body_text[:500]
 
         candidate_labels = [
-            "automated notification from a software application",
+            "account activity, password reset, security alert, billing receipt, or system report",
             "marketing newsletter or promotional content",
         ]
 
@@ -227,8 +311,8 @@ class SaaSUsageAnalyzer(BaseAnalyzer):
             top_label = result["labels"][0]
             top_score = result["scores"][0]
 
-            if "notification" in top_label:
-                return "transactional", int(top_score * 100)
+            if "account" in top_label or "activity" in top_label:
+                return "usage", int(top_score * 100)
             else:
                 return "marketing", int(top_score * 100)
 
@@ -241,56 +325,23 @@ class SaaSUsageAnalyzer(BaseAnalyzer):
     def _adjust_with_headers(
         self, category: str, confidence: int, observations: list[Observation]
     ) -> tuple[str, int]:
+        """Nudge confidence based on header signals that corroborate or contradict."""
         has_list_unsub = any(o.key == "list_unsubscribe" for o in observations)
         has_bulk = any(o.key == "bulk_precedence" for o in observations)
         has_auto = any(o.key == "auto_submitted" for o in observations)
 
         marketing_signals = (1 if has_list_unsub else 0) + (1 if has_bulk else 0)
-        transactional_signals = 1 if has_auto else 0
+        usage_signals = 1 if has_auto else 0
 
-        if category in ("transactional", "billing") and transactional_signals > 0:
-            confidence = min(confidence + transactional_signals * 5, 100)
+        if category == "usage" and usage_signals > 0:
+            confidence = min(confidence + usage_signals * 5, 100)
         elif category == "marketing" and marketing_signals > 0:
-            confidence = max(confidence - marketing_signals * 5, 0)
+            confidence = min(confidence + marketing_signals * 5, 100)
 
-        if category in ("transactional", "billing") and marketing_signals > transactional_signals:
+        # Contradictory signals reduce confidence
+        if category == "usage" and marketing_signals > usage_signals:
             confidence = max(confidence - marketing_signals * 5, 40)
-        elif category == "marketing" and transactional_signals > marketing_signals:
-            confidence = min(confidence + transactional_signals * 5, 50)
+        elif category == "marketing" and usage_signals > marketing_signals:
+            confidence = max(confidence - usage_signals * 5, 40)
 
         return category, confidence
-
-    # ----- Vendor enrichment -----
-
-    def _vendor_observations(self, sender: str) -> list[Observation]:
-        if not sender:
-            return []
-
-        vendor_data = _load_vendor_data()
-        domain_index = vendor_data.get("domain_index", {})
-        apps = vendor_data.get("apps", {})
-
-        domain = sender.lower().split("@")[-1] if "@" in sender else sender.lower()
-
-        app_id = None
-        parts = domain.split(".")
-        for i in range(len(parts) - 1):
-            candidate = ".".join(parts[i:])
-            if candidate in domain_index:
-                app_id = domain_index[candidate]
-                break
-
-        observations = []
-        if app_id and app_id in apps:
-            app = apps[app_id]
-            observations.append(
-                Observation(key="provider", value=app.get("name", ""), type="text")
-            )
-            observations.append(
-                Observation(key="provider_category", value=app.get("category", ""), type="text")
-            )
-            observations.append(
-                Observation(key="provider_org", value=app.get("organization", "unknown"), type="text")
-            )
-
-        return observations

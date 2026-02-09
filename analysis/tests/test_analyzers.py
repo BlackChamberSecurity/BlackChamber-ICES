@@ -194,3 +194,59 @@ class TestAttachmentAnalyzer:
         ])
         result = self.analyzer.analyze(email)
         assert ".docm" in result.get("dangerous_extensions", "")
+
+
+class TestSaaSUsageAnalyzer:
+    """Tests for the refactored domain-first SaaS usage analyzer."""
+
+    def setup_method(self):
+        from analysis.analyzers.saas_usage_analyzer import SaaSUsageAnalyzer
+        self.analyzer = SaaSUsageAnalyzer()
+
+    def test_known_vendor_sets_is_saas(self):
+        """A known vendor domain should emit is_saas=true, saas_confidence=known."""
+        email = _make_email(
+            sender="noreply@github.com",
+            subject="[GitHub] Your push to main was successful",
+        )
+        result = self.analyzer.analyze(email)
+        assert result.get("is_saas") is True
+        assert result.get("saas_confidence") == "known"
+        assert result.get("provider") == "GitHub"
+
+    def test_unknown_personal_sender_not_saas(self):
+        """A random personal email should emit is_saas=false, no category."""
+        email = _make_email(
+            sender="john@personal-domain.com",
+            subject="Hey, lunch tomorrow?",
+        )
+        result = self.analyzer.analyze(email)
+        assert result.get("is_saas") is False
+        assert result.get("category") is None
+        assert result.get("confidence") is None
+
+    def test_unknown_domain_not_saas_despite_signals(self):
+        """Unknown domain should NOT be SaaS even with noreply@ + Auto-Submitted (no heuristic path)."""
+        email = _make_email(
+            sender="noreply@unknown-saas-platform.io",
+            subject="Your account has been updated",
+            headers={"Auto-Submitted": "auto-generated"},
+        )
+        result = self.analyzer.analyze(email)
+        assert result.get("is_saas") is False
+        assert result.get("saas_confidence") is None
+        assert result.get("category") is None
+
+    def test_category_only_for_saas(self):
+        """Non-SaaS emails should NOT have category or confidence observations."""
+        email = _make_email(
+            sender="friend@randomdomain.com",
+            subject="Weekend plans",
+            body=EmailBody(content_type="text", content="Are you free Saturday?"),
+        )
+        result = self.analyzer.analyze(email)
+        assert result.get("is_saas") is False
+        # No category or confidence for non-SaaS
+        assert result.get("category") is None
+        assert result.get("confidence") is None
+

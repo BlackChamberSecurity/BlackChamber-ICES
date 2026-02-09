@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-BCEM Action Base Class
+BlackChamber ICES Action Base Class
 
 Same drop-in pattern as the analysis engine's analyzers.
 To create a new action:

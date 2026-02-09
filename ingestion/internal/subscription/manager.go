@@ -390,7 +390,7 @@ func (m *LifecycleManager) HandleLifecycleEvent(ctx context.Context, lifecycleEv
 		)
 		// Token refresh is handled by the oauth2 transport automatically.
 		// Try to renew the subscription.
-		rec, err := m.store.Get(ctx, "", "") // We need to find by subscription ID
+		rec, err := m.store.GetBySubscriptionID(ctx, subscriptionID)
 		if err != nil || rec == nil {
 			slog.Error("could not find subscription for reauth", "subscription_id", subscriptionID)
 			return
@@ -406,11 +406,14 @@ func (m *LifecycleManager) HandleLifecycleEvent(ctx context.Context, lifecycleEv
 			"subscription_id", subscriptionID,
 			"tenant", tenantAlias,
 		)
-		// Trigger delta sync — handled by the wired callback
+		// Look up the subscription to find the user and trigger delta sync
+		rec, err := m.store.GetBySubscriptionID(ctx, subscriptionID)
+		if err != nil || rec == nil {
+			slog.Error("could not find subscription for missed event", "subscription_id", subscriptionID)
+			return
+		}
 		if m.OnGapDetected != nil {
-			// We'd need to look up the userID from the subscription
-			// For now, log and let the periodic delta sync handle it
-			slog.Info("delta sync will catch up missed notifications")
+			go m.OnGapDetected(ctx, rec.TenantID, rec.UserID)
 		}
 
 	default:

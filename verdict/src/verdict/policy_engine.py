@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-BCEM Policy Engine
+BlackChamber ICES Policy Engine
 
 Evaluates configurable YAML rules against analysis observations.
 Supports matching by:

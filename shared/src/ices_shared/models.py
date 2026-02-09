@@ -95,3 +95,78 @@ class AnalysisResult:
             ],
             processing_time_ms=data.get("processing_time_ms", 0.0),
         )
+
+
+# ---------------------------------------------------------------------------
+# Email component models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class EmailAddress:
+    """An email sender or recipient."""
+    address: str = ""
+    name: str = ""
+
+
+@dataclass
+class EmailBody:
+    """The content of an email."""
+    content_type: str = "text"   # "text" or "html"
+    content: str = ""
+
+
+@dataclass
+class Attachment:
+    """An email attachment."""
+    name: str = ""
+    content_type: str = ""
+    size: int = 0
+    content_bytes: str = ""      # Base64-encoded
+
+
+# ---------------------------------------------------------------------------
+# Verdict — unified model used by both analysis and verdict services
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Verdict:
+    """Collection of all analyzer results for one email.
+
+    Produced by the analysis pipeline, consumed by the policy engine.
+    This is the canonical shape that flows over the Redis queue between
+    the analysis and verdict workers.
+    """
+    message_id: str = ""
+    user_id: str = ""
+    tenant_id: str = ""
+    tenant_alias: str = ""
+    sender: str = ""
+    recipients: list = field(default_factory=list)  # list[str]
+    results: list = field(default_factory=list)      # list[AnalysisResult]
+
+    def to_dict(self) -> dict:
+        return {
+            "message_id": self.message_id,
+            "user_id": self.user_id,
+            "tenant_id": self.tenant_id,
+            "tenant_alias": self.tenant_alias,
+            "sender": self.sender,
+            "recipients": self.recipients,
+            "results": [r.to_dict() for r in self.results],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Verdict":
+        return cls(
+            message_id=data.get("message_id", ""),
+            user_id=data.get("user_id", ""),
+            tenant_id=data.get("tenant_id", ""),
+            tenant_alias=data.get("tenant_alias", ""),
+            sender=data.get("sender", ""),
+            recipients=data.get("recipients", []),
+            results=[
+                AnalysisResult.from_dict(r)
+                for r in data.get("results", [])
+            ],
+        )
+

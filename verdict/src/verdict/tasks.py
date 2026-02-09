@@ -21,9 +21,7 @@ Two tasks:
 """
 import json
 import logging
-import os
 
-import yaml
 
 from verdict.celery_app import app
 from verdict.models import VerdictEvent
@@ -41,22 +39,11 @@ _token_manager = None
 
 
 def _load_policies() -> list[dict]:
-    """Load policies from config.yaml."""
-    config_paths = [
-        "/app/config/config.yaml",
-        os.path.join(os.path.dirname(__file__), "..", "..", "..", "config", "config.yaml"),
-    ]
-    for path in config_paths:
-        try:
-            with open(path) as f:
-                config = yaml.safe_load(f) or {}
-            policies = config.get("policies", [])
-            logger.info("Loaded %d policies from %s", len(policies), path)
-            return policies
-        except FileNotFoundError:
-            continue
-    logger.warning("No config.yaml found — no policies loaded")
-    return []
+    """Load policies from config.yaml via shared config loader."""
+    from ices_shared.config import get_policies
+    policies = get_policies()
+    logger.info("Loaded %d policies", len(policies))
+    return policies
 
 
 def _get_dispatcher() -> Dispatcher:
@@ -71,35 +58,25 @@ def _get_dispatcher() -> Dispatcher:
 def _get_token_manager() -> TokenManager:
     """Get or create the token manager (one per worker process).
 
-    Loads tenant credentials from config.yaml. Falls back to env vars
-    for single-tenant setups.
+    Loads tenant credentials from config.yaml via the shared config loader.
+    Falls back to env vars for single-tenant setups.
     """
     global _token_manager
     if _token_manager is None:
         from verdict.token_manager import TenantCredentials
+        from ices_shared.config import get_tenants
+
         tenants = {}
-        # Load tenant credentials from the same config.yaml used for policies
-        config_paths = [
-            "/app/config/config.yaml",
-            os.path.join(os.path.dirname(__file__), "..", "..", "..", "config", "config.yaml"),
-        ]
-        for path in config_paths:
-            try:
-                with open(path) as f:
-                    config = yaml.safe_load(f) or {}
-                for t in config.get("tenants", []):
-                    tid = t.get("tenant_id", "")
-                    cid = t.get("client_id", "")
-                    csecret = t.get("client_secret", "")
-                    if tid and cid and csecret:
-                        tenants[tid] = TenantCredentials(
-                            tenant_id=tid,
-                            client_id=cid,
-                            client_secret=csecret,
-                        )
-                break
-            except FileNotFoundError:
-                continue
+        for t in get_tenants():
+            tid = t.get("tenant_id", "")
+            cid = t.get("client_id", "")
+            csecret = t.get("client_secret", "")
+            if tid and cid and csecret:
+                tenants[tid] = TenantCredentials(
+                    tenant_id=tid,
+                    client_id=cid,
+                    client_secret=csecret,
+                )
         _token_manager = TokenManager(tenants=tenants if tenants else None)
     return _token_manager
 
@@ -173,7 +150,7 @@ def execute_verdict(self, verdict_json: str):
         request = result.get("request")
         if request:
             batch_client = _get_batch_client()
-            batch_client.add(request)
+            batch_client.add_action(request)
 
         return {
             "message_id": verdict.message_id,

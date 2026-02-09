@@ -133,14 +133,9 @@ func main() {
 	}
 
 	// --- Graph Fetcher ---
-	// Use the first tenant's client for fetching (fetchMessage uses the
-	// notification's tenant context, but the fetcher needs a default client).
-	var defaultGraphClient *http.Client
-	for _, c := range graphClients {
-		defaultGraphClient = c
-		break
-	}
-	fetcher := graph.NewFetcher(defaultGraphClient, graphBaseURL)
+	// Pass all per-tenant clients so the fetcher uses the correct
+	// OAuth token for each tenant's notification.
+	fetcher := graph.NewFetcher(graphClients, graphBaseURL)
 
 	// --- User Discovery ---
 	disc := discovery.NewDiscovery(graphBaseURL)
@@ -230,12 +225,6 @@ func main() {
 	}
 
 	// Build tenant info for periodic sync
-	type syncTenant struct {
-		TenantID    string
-		TenantAlias string
-		Users       []string
-		Client      *http.Client
-	}
 	var syncTenants []struct {
 		TenantID    string
 		TenantAlias string

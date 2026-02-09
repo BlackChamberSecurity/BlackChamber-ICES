@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-BCEM Verdict Worker — Graph API Batch Client
+BlackChamber ICES Verdict Worker — Graph API Batch Client
 
 This module handles batching multiple Graph API actions (quarantine, tag,
 delete) into a single HTTP call using the Graph API $batch endpoint.
@@ -35,10 +35,12 @@ from typing import Callable, Optional
 import httpx
 import redis
 
+from ices_shared.celery_defaults import CELERY_DEFAULTS
+
 logger = logging.getLogger(__name__)
 
 GRAPH_API_BASE = os.environ.get("GRAPH_API_BASE", "https://graph.microsoft.com/v1.0")
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = CELERY_DEFAULTS["broker_url"]
 BATCH_SIZE = int(os.environ.get("VERDICT_BATCH_SIZE", "20"))
 BATCH_BUFFER_KEY = "verdict:batch_buffer"
 

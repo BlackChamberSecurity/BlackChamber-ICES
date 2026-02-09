@@ -113,6 +113,19 @@ func (s *Store) Get(ctx context.Context, tenantID, userID string) (*Record, erro
 	return scanRecord(row)
 }
 
+// GetBySubscriptionID retrieves a subscription by its Graph API subscription ID.
+// Used by lifecycle event handlers that only receive a subscription ID.
+func (s *Store) GetBySubscriptionID(ctx context.Context, subscriptionID string) (*Record, error) {
+	row := s.pool.QueryRow(ctx, `
+		SELECT id, subscription_id, user_id, tenant_id, tenant_alias,
+		       client_state, expires_at, delta_link, last_notification,
+		       last_delta_sync, status, created_at, updated_at
+		FROM subscriptions
+		WHERE subscription_id = $1
+	`, subscriptionID)
+	return scanRecord(row)
+}
+
 // ListByTenant returns all subscriptions for a tenant.
 func (s *Store) ListByTenant(ctx context.Context, tenantID string) ([]Record, error) {
 	rows, err := s.pool.Query(ctx, `
