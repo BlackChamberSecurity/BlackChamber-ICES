@@ -42,6 +42,7 @@ services:
     build: ./ingestion
     ports:
       - "8080:8080"
+      - "${WEBHOOK_PORT:-8081}:8081"
     env_file: .env
     volumes:
       - ./config/config.yaml:/app/config/config.yaml:ro
@@ -100,6 +101,22 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # ngrok tunnel (dev only — enables webhook testing without a public domain)
+  # Start with: docker compose --profile dev up
+  # ---------------------------------------------------------------------------
+  ngrok:
+    image: ngrok/ngrok:latest
+    command: http ingestion:8081 --log stdout
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    ports:
+      - "4040:4040"
+    depends_on:
+      - ingestion
+    profiles:
+      - dev
 
 volumes:
   redis_data:

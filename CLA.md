@@ -1,8 +1,8 @@
 # Contributor License Agreement (CLA)
 
-## BCEM — Black Chamber - ICES
+## BCI - Black Chamber ICES
 
-Thank you for your interest in contributing to BCEM. To protect both you
+Thank you for your interest in contributing to BCI - Black Chamber ICES. To protect both you            
 and the project, we require all contributors to sign this Contributor
 License Agreement before any contribution can be accepted.
 

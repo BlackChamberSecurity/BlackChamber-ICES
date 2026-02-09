@@ -25,11 +25,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,6 +43,7 @@ import (
 	"github.com/bcem/ingestion/internal/dedup"
 	"github.com/bcem/ingestion/internal/graph"
 	"github.com/bcem/ingestion/internal/queue"
+	"github.com/bcem/ingestion/internal/webhook"
 )
 
 func main() {
@@ -83,7 +86,28 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// --- Start a poller per tenant ---
+	// --- Resolve webhook URL ---
+	webhookAddr := resolveWebhookURL(cfg.WebhookURL)
+	webhookMode := webhookAddr != ""
+
+	if webhookMode {
+		slog.Info("running in WEBHOOK mode", "webhook_addr", webhookAddr)
+	} else {
+		slog.Info("running in POLL mode", "interval", cfg.PollInterval)
+	}
+
+	// Track tenant resources for both modes
+	type tenantResources struct {
+		tenant     config.TenantConfig
+		feedClient *activityfeed.Client
+		fetcher    *graph.Fetcher
+	}
+	var tenants []tenantResources
+
+	// Webhook handlers — one per tenant (used in webhook mode)
+	webhookHandlers := make(map[string]*webhook.Handler)
+
+	// --- Phase 1: Build clients + handlers (no subscription calls yet) ---
 	for _, tenant := range cfg.Tenants {
 		tenant := tenant // capture loop variable
 
@@ -118,71 +142,103 @@ func main() {
 		feedClient := activityfeed.NewClient(feedHTTP, tenant.TenantID)
 		fetcher := graph.NewFetcher(graphHTTP, "https://graph.microsoft.com/v1.0")
 
+		tenants = append(tenants, tenantResources{tenant, feedClient, fetcher})
+
+		if webhookMode {
+			webhookHandlers[tenant.Alias] = webhook.NewHandler(
+				feedClient, fetcher, publisher, filter,
+				cfg.WebhookAuthID, tenant,
+			)
+		}
+	}
+
+	// --- Phase 2: Start webhook server BEFORE registering subscriptions ---
+	// Microsoft immediately validates the endpoint when StartSubscription is called,
+	// so the server must be listening before we make that call.
+	if webhookMode {
+		ready, err := webhook.Serve(ctx, cfg.WebhookPort, webhookHandlers)
+		if err != nil {
+			slog.Error("failed to start webhook server", "error", err)
+			os.Exit(1)
+		}
+		<-ready // Wait for the port to be bound
+		slog.Info("webhook server ready, proceeding to register subscriptions")
+	}
+
+	// --- Phase 3: Register subscriptions + start pollers ---
+	for _, tr := range tenants {
 		// Start Activity Feed subscription
-		if err := feedClient.StartSubscription(ctx); err != nil {
+		// In webhook mode: register the webhook address (Microsoft will validate it now)
+		// In poll mode: no webhook (empty strings)
+		if err := tr.feedClient.StartSubscription(ctx, webhookAddr, cfg.WebhookAuthID); err != nil {
 			slog.Error("failed to start activity feed subscription",
-				"alias", tenant.Alias,
+				"alias", tr.tenant.Alias,
 				"error", err,
 			)
 			os.Exit(1)
 		}
 
-		slog.Info("activity feed subscription active",
-			"alias", tenant.Alias,
-			"content_type", "Audit.Exchange",
-		)
-
-		// Start poller for this tenant
-		poller := activityfeed.NewPoller(feedClient, cfg.PollInterval, cfg.PollLookback,
-			func(ctx context.Context, event activityfeed.AuditEvent) error {
-				slog.Info("processing email event",
-					"tenant", tenant.Alias,
-					"operation", event.Operation,
-					"user_id", event.UserID,
-					"item_id", event.ItemID,
-					"subject", event.Subject,
-				)
-
-				if event.ItemID == "" {
-					slog.Warn("audit event has no ItemId, skipping fetch",
+		if webhookMode {
+			slog.Info("subscription registered with webhook",
+				"alias", tr.tenant.Alias,
+				"webhook_addr", webhookAddr,
+			)
+		} else {
+			// Poll mode: start background poller
+			tenant := tr.tenant
+			feedClient := tr.feedClient
+			fetcher := tr.fetcher
+			poller := activityfeed.NewPoller(feedClient, cfg.PollInterval, cfg.PollLookback,
+				func(ctx context.Context, event activityfeed.AuditEvent) error {
+					slog.Info("processing email event",
 						"tenant", tenant.Alias,
-						"event_id", event.ID,
+						"operation", event.Operation,
+						"user_id", event.UserID,
+						"item_id", event.ItemID,
+						"subject", event.Subject,
 					)
-					return nil
-				}
 
-				// Dedup: skip events we've already processed
-				isNew, err := filter.IsNew(ctx, event.ID)
-				if err != nil {
-					slog.Warn("dedup check failed, proceeding anyway",
-						"event_id", event.ID, "error", err,
-					)
-				} else if !isNew {
-					slog.Debug("skipping duplicate event",
-						"event_id", event.ID, "tenant", tenant.Alias,
-					)
-					return nil
-				}
+					if event.ItemID == "" {
+						slog.Warn("audit event has no ItemId, skipping fetch",
+							"tenant", tenant.Alias,
+							"event_id", event.ID,
+						)
+						return nil
+					}
 
-				emailEvent, err := fetcher.FetchMessage(ctx, event.UserID, event.ItemID, tenant.TenantID, tenant.Alias)
-				if err != nil {
-					return fmt.Errorf("fetch message: %w", err)
-				}
+					// Dedup: skip events we've already processed
+					isNew, err := filter.IsNew(ctx, event.ID)
+					if err != nil {
+						slog.Warn("dedup check failed, proceeding anyway",
+							"event_id", event.ID, "error", err,
+						)
+					} else if !isNew {
+						slog.Debug("skipping duplicate event",
+							"event_id", event.ID, "tenant", tenant.Alias,
+						)
+						return nil
+					}
 
-				if emailEvent == nil {
-					return nil
-				}
+					emailEvent, err := fetcher.FetchMessage(ctx, event.UserID, event.ItemID, tenant.TenantID, tenant.Alias)
+					if err != nil {
+						return fmt.Errorf("fetch message: %w", err)
+					}
 
-				return publisher.PublishEmailEvent(ctx, emailEvent)
-			},
-		)
+					if emailEvent == nil {
+						return nil
+					}
 
-		go poller.Run(ctx)
-		slog.Info("activity feed poller started",
-			"alias", tenant.Alias,
-			"interval", cfg.PollInterval,
-			"lookback", cfg.PollLookback,
-		)
+					return publisher.PublishEmailEvent(ctx, emailEvent)
+				},
+			)
+
+			go poller.Run(ctx)
+			slog.Info("activity feed poller started",
+				"alias", tenant.Alias,
+				"interval", cfg.PollInterval,
+				"lookback", cfg.PollLookback,
+			)
+		}
 	}
 
 	// --- Health Check Server ---
@@ -230,4 +286,81 @@ func main() {
 	}
 
 	slog.Info("ingestion service stopped")
+}
+
+// resolveWebhookURL resolves the webhook URL from config.
+//
+//   - Empty string → poll mode (no webhook)
+//   - "auto" → discover the public URL from a local ngrok container
+//   - Any other string → use as-is (production)
+func resolveWebhookURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	if strings.ToLower(raw) != "auto" {
+		return raw
+	}
+
+	// Auto-discover from ngrok's local API.
+	// The ngrok container exposes its API on http://ngrok:4040 inside Docker.
+	ngrokAPI := os.Getenv("NGROK_API_URL")
+	if ngrokAPI == "" {
+		ngrokAPI = "http://ngrok:4040"
+	}
+
+	slog.Info("discovering webhook URL from ngrok", "api", ngrokAPI)
+
+	// Retry a few times — ngrok may not be ready yet
+	var lastErr error
+	for attempt := 0; attempt < 10; attempt++ {
+		resp, err := http.Get(ngrokAPI + "/api/tunnels")
+		if err != nil {
+			lastErr = err
+			slog.Debug("ngrok not ready, retrying",
+				"attempt", attempt+1,
+				"error", err,
+			)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		defer resp.Body.Close()
+
+		var result struct {
+			Tunnels []struct {
+				PublicURL string `json:"public_url"`
+				Proto     string `json:"proto"`
+			} `json:"tunnels"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			lastErr = err
+			slog.Warn("failed to decode ngrok response", "error", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		// Prefer HTTPS tunnel
+		for _, t := range result.Tunnels {
+			if t.Proto == "https" {
+				slog.Info("ngrok tunnel discovered", "url", t.PublicURL)
+				return t.PublicURL + "/webhook"
+			}
+		}
+
+		// Fall back to any tunnel
+		if len(result.Tunnels) > 0 {
+			url := result.Tunnels[0].PublicURL
+			slog.Info("ngrok tunnel discovered", "url", url)
+			return url + "/webhook"
+		}
+
+		lastErr = fmt.Errorf("no tunnels found")
+		time.Sleep(2 * time.Second)
+	}
+
+	slog.Error("failed to discover ngrok tunnel, falling back to poll mode",
+		"error", lastErr,
+	)
+	return ""
 }

@@ -42,6 +42,12 @@ type Config struct {
 	PollInterval time.Duration
 	PollLookback time.Duration
 
+	// Webhook — when WebhookURL is set, push mode is used instead of polling.
+	// Set to "auto" to discover the URL from a local ngrok container.
+	WebhookURL    string
+	WebhookAuthID string
+	WebhookPort   int
+
 	// Redis
 	RedisURL    string
 	EmailsQueue string
@@ -86,11 +92,14 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		PollInterval: envOrDefaultDuration("POLL_INTERVAL", 60*time.Second),
-		PollLookback: envOrDefaultDuration("POLL_LOOKBACK", 3*time.Hour),
-		RedisURL:     firstNonEmpty(raw.Redis.URL, envOrDefault("REDIS_URL", "redis://localhost:6379/0")),
-		EmailsQueue:  firstNonEmpty(raw.Redis.Queues.Emails, envOrDefault("EMAILS_QUEUE", "emails")),
-		Port:         envOrDefaultInt("PORT", 8080),
+		PollInterval:  envOrDefaultDuration("POLL_INTERVAL", 60*time.Second),
+		PollLookback:  envOrDefaultDuration("POLL_LOOKBACK", 3*time.Hour),
+		WebhookURL:    envOrDefault("WEBHOOK_URL", ""),
+		WebhookAuthID: envOrDefault("WEBHOOK_AUTH_ID", ""),
+		WebhookPort:   envOrDefaultInt("WEBHOOK_PORT", 8081),
+		RedisURL:      firstNonEmpty(raw.Redis.URL, envOrDefault("REDIS_URL", "redis://localhost:6379/0")),
+		EmailsQueue:   firstNonEmpty(raw.Redis.Queues.Emails, envOrDefault("EMAILS_QUEUE", "emails")),
+		Port:          envOrDefaultInt("PORT", 8080),
 	}
 
 	// Build tenant configs

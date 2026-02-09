@@ -47,10 +47,19 @@ func NewPoller(client *Client, interval, lookback time.Duration, onEvent EmailEv
 	}
 }
 
-// emailOperations are the audit event operations that indicate a new email.
+// emailOperations are Exchange audit operations relevant to email monitoring.
+// The Activity Feed's Audit.Exchange subscription emits mailbox audit events,
+// NOT mail transport events. The most common operation for email access is
+// MailItemsAccessed. We accept a broad set and let the ItemId check downstream
+// gate which events are actually processable via Graph API.
 var emailOperations = map[string]bool{
-	"MessageReceived":  true,
-	"MessageDelivered": true,
+	"MailItemsAccessed": true,
+	"MessageBind":       true,
+	"Create":            true,
+	"Send":              true,
+	"SendAs":            true,
+	"SendOnBehalf":      true,
+	"Update":            true,
 }
 
 // Run starts the polling loop. It blocks until the context is cancelled.

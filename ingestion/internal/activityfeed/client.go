@@ -20,6 +20,7 @@
 package activityfeed
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -82,13 +83,36 @@ type AuditEvent struct {
 
 // StartSubscription activates the Audit.Exchange content type.
 // This is idempotent — calling it when already active is a no-op.
-func (c *Client) StartSubscription(ctx context.Context) error {
+//
+// When webhookAddr is non-empty, the subscription is configured to push
+// content-available notifications to that URL. Microsoft will include the
+// webhookAuthID value in the Webhook-AuthID header of each notification.
+// When webhookAddr is empty, the subscription operates in poll mode (no push).
+func (c *Client) StartSubscription(ctx context.Context, webhookAddr, webhookAuthID string) error {
 	u := fmt.Sprintf("%s/%s/activity/feed/subscriptions/start?contentType=%s",
 		c.baseURL, c.tenantID, ContentTypeExchange)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
+	var body io.Reader
+	if webhookAddr != "" {
+		payload := map[string]interface{}{
+			"webhook": map[string]string{
+				"address": webhookAddr,
+				"authId":  webhookAuthID,
+			},
+		}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("marshal webhook body: %w", err)
+		}
+		body = bytes.NewReader(data)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, body)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
+	}
+	if webhookAddr != "" {
+		req.Header.Set("Content-Type", "application/json")
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -100,8 +124,8 @@ func (c *Client) StartSubscription(ctx context.Context) error {
 	// 200 = already active, 200 = just started — both are fine
 	// 400 with AF20024 = subscription already enabled — also fine
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		bodyStr := string(body)
+		respBody, _ := io.ReadAll(resp.Body)
+		bodyStr := string(respBody)
 
 		// AF20024 means "The subscription is already enabled" — treat as success
 		if resp.StatusCode == http.StatusBadRequest && strings.Contains(bodyStr, "AF20024") {
@@ -112,7 +136,16 @@ func (c *Client) StartSubscription(ctx context.Context) error {
 		return fmt.Errorf("start subscription failed (HTTP %d): %s", resp.StatusCode, bodyStr)
 	}
 
-	slog.Info("activity feed subscription active", "content_type", ContentTypeExchange)
+	if webhookAddr != "" {
+		slog.Info("activity feed subscription active (webhook mode)",
+			"content_type", ContentTypeExchange,
+			"webhook_addr", webhookAddr,
+		)
+	} else {
+		slog.Info("activity feed subscription active (poll mode)",
+			"content_type", ContentTypeExchange,
+		)
+	}
 	return nil
 }
 
