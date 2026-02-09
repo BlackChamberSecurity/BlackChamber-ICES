@@ -21,6 +21,7 @@ Orchestrates analysis of an email:
 3. Returns a Verdict with all results
 """
 import logging
+import time
 
 from analysis.analyzers import discover_analyzers
 from analysis.models import EmailEvent, AnalysisResult, Observation, Verdict
@@ -46,25 +47,32 @@ def run_pipeline(email: EmailEvent) -> Verdict:
 
     for analyzer in analyzers:
         try:
+            t0 = time.monotonic()
             result = analyzer.analyze(email)
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            result.processing_time_ms = elapsed_ms
             results.append(result)
 
             obs_summary = ", ".join(
                 f"{o.key}={o.value}" for o in result.observations
             )
             logger.info(
-                "Analyzer '%s': %d observations [%s]",
+                "Analyzer '%s': %d observations [%s] (%.1fms)",
                 analyzer.name, len(result.observations), obs_summary,
+                elapsed_ms,
             )
         except Exception as exc:
+            elapsed_ms = (time.monotonic() - t0) * 1000
             logger.exception(
-                "Analyzer '%s' failed: %s", analyzer.name, exc,
+                "Analyzer '%s' failed (%.1fms): %s", analyzer.name,
+                elapsed_ms, exc,
             )
             results.append(AnalysisResult(
                 analyzer=analyzer.name,
                 observations=[
                     Observation(key="error", value=str(exc), type="text"),
                 ],
+                processing_time_ms=elapsed_ms,
             ))
 
     # Extract recipients for policy engine matching

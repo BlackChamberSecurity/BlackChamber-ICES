@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// BCEM Ingestion Service
+// BlackChamber ICES — Ingestion Service
 //
-// This is the entry point for the Go ingestion service. It:
+// Entry point for the Go ingestion service. It:
 //  1. Loads multi-tenant configuration from config.yaml
-//  2. Authenticates with M365 via client credentials per tenant
-//  3. Connects to Redis
-//  4. Starts an Activity Feed poller per tenant
-//  5. Serves a health check endpoint on :PORT
-//  6. Handles graceful shutdown on SIGTERM/SIGINT
+//  2. Connects to PostgreSQL and Redis
+//  3. Discovers mailbox users per tenant (hybrid: auto + config overrides)
+//  4. Creates Graph API subscriptions for each mailbox
+//  5. Runs a subscription renewal loop and periodic delta sync
+//  6. Serves webhook endpoints for Graph change notifications
+//  7. Handles graceful shutdown on SIGTERM/SIGINT
 package main
 
 import (
@@ -35,16 +36,21 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/oauth2/clientcredentials"
 
-	"github.com/bcem/ingestion/internal/activityfeed"
 	"github.com/bcem/ingestion/internal/config"
 	"github.com/bcem/ingestion/internal/dedup"
+	"github.com/bcem/ingestion/internal/delta"
+	"github.com/bcem/ingestion/internal/discovery"
 	"github.com/bcem/ingestion/internal/graph"
 	"github.com/bcem/ingestion/internal/queue"
+	"github.com/bcem/ingestion/internal/subscription"
 	"github.com/bcem/ingestion/internal/webhook"
 )
+
+const graphBaseURL = "https://graph.microsoft.com/v1.0"
 
 func main() {
 	// Structured JSON logging
@@ -53,7 +59,7 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	slog.Info("starting BCEM ingestion service")
+	slog.Info("starting BlackChamber ICES ingestion service")
 
 	// --- Load Configuration ---
 	cfg, err := config.Load()
@@ -62,7 +68,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("configuration loaded", "tenants", len(cfg.Tenants))
+	slog.Info("configuration loaded",
+		"tenants", len(cfg.Tenants),
+		"renewal_buffer", cfg.SubscriptionRenewalBuffer,
+		"delta_interval", cfg.DeltaSyncInterval,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// --- Connect to PostgreSQL ---
+	pgPool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		slog.Error("failed to create Postgres pool", "error", err)
+		os.Exit(1)
+	}
+	defer pgPool.Close()
+
+	if err := pgPool.Ping(ctx); err != nil {
+		slog.Error("failed to connect to PostgreSQL", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("connected to PostgreSQL")
 
 	// --- Connect to Redis ---
 	opt, err := redis.ParseURL(cfg.RedisURL)
@@ -73,179 +100,183 @@ func main() {
 	rdb := redis.NewClient(opt)
 
 	publisher := queue.NewPublisher(rdb, cfg.EmailsQueue)
-	if err := publisher.Ping(context.Background()); err != nil {
+	if err := publisher.Ping(ctx); err != nil {
 		slog.Error("failed to connect to Redis", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("connected to Redis", "url", cfg.RedisURL)
+	slog.Info("connected to Redis")
 
 	// --- Dedup Filter ---
 	filter := dedup.NewFilter(rdb)
-	slog.Info("dedup filter initialised", "ttl", "24h")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// --- Resolve webhook URL ---
-	webhookAddr := resolveWebhookURL(cfg.WebhookURL)
-	webhookMode := webhookAddr != ""
-
-	if webhookMode {
-		slog.Info("running in WEBHOOK mode", "webhook_addr", webhookAddr)
-	} else {
-		slog.Info("running in POLL mode", "interval", cfg.PollInterval)
+	// --- Subscription Store (Postgres) ---
+	store, err := subscription.NewStore(ctx, pgPool)
+	if err != nil {
+		slog.Error("failed to initialise subscription store", "error", err)
+		os.Exit(1)
 	}
 
-	// Track tenant resources for both modes
-	type tenantResources struct {
-		tenant     config.TenantConfig
-		feedClient *activityfeed.Client
-		fetcher    *graph.Fetcher
-	}
-	var tenants []tenantResources
-
-	// Webhook handlers — one per tenant (used in webhook mode)
-	webhookHandlers := make(map[string]*webhook.Handler)
-
-	// --- Phase 1: Build clients + handlers (no subscription calls yet) ---
+	// --- Build OAuth2 clients per tenant ---
+	graphClients := make(map[string]*http.Client)
 	for _, tenant := range cfg.Tenants {
-		tenant := tenant // capture loop variable
-
-		slog.Info("initialising tenant",
-			"alias", tenant.Alias,
-			"provider", tenant.Provider,
-			"tenant_id", tenant.TenantID,
-		)
-
 		if tenant.Provider != "m365" {
-			slog.Warn("skipping unsupported provider", "alias", tenant.Alias, "provider", tenant.Provider)
 			continue
 		}
 
-		// OAuth2 clients per tenant
-		graphCreds := &clientcredentials.Config{
+		creds := &clientcredentials.Config{
 			ClientID:     tenant.ClientID,
 			ClientSecret: tenant.ClientSecret,
 			TokenURL:     fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", tenant.TenantID),
 			Scopes:       []string{"https://graph.microsoft.com/.default"},
 		}
-		graphHTTP := graphCreds.Client(context.Background())
+		graphClients[tenant.Alias] = creds.Client(ctx)
+	}
 
-		feedCreds := &clientcredentials.Config{
-			ClientID:     tenant.ClientID,
-			ClientSecret: tenant.ClientSecret,
-			TokenURL:     fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", tenant.TenantID),
-			Scopes:       []string{"https://manage.office.com/.default"},
-		}
-		feedHTTP := feedCreds.Client(context.Background())
+	// --- Graph Fetcher ---
+	// Use the first tenant's client for fetching (fetchMessage uses the
+	// notification's tenant context, but the fetcher needs a default client).
+	var defaultGraphClient *http.Client
+	for _, c := range graphClients {
+		defaultGraphClient = c
+		break
+	}
+	fetcher := graph.NewFetcher(defaultGraphClient, graphBaseURL)
 
-		feedClient := activityfeed.NewClient(feedHTTP, tenant.TenantID)
-		fetcher := graph.NewFetcher(graphHTTP, "https://graph.microsoft.com/v1.0")
+	// --- User Discovery ---
+	disc := discovery.NewDiscovery(graphBaseURL)
 
-		tenants = append(tenants, tenantResources{tenant, feedClient, fetcher})
+	// --- Resolve webhook URL ---
+	webhookURL := resolveWebhookURL(cfg.WebhookURL)
+	if webhookURL == "" {
+		slog.Error("WEBHOOK_URL is required — Graph API subscriptions need a public webhook endpoint")
+		os.Exit(1)
+	}
+	slog.Info("webhook URL resolved", "url", webhookURL)
 
-		if webhookMode {
-			webhookHandlers[tenant.Alias] = webhook.NewHandler(
-				feedClient, fetcher, publisher, filter,
-				cfg.WebhookAuthID, tenant,
-			)
+	// --- Lifecycle Manager ---
+	mgr := subscription.NewManager(subscription.ManagerConfig{
+		Store:        store,
+		Discovery:    disc,
+		GraphClients: graphClients,
+		Tenants:      cfg.Tenants,
+		WebhookURL:   webhookURL,
+		RenewBuffer:  cfg.SubscriptionRenewalBuffer,
+		GraphBaseURL: graphBaseURL,
+	})
+
+	// --- Delta Syncer ---
+	syncer := delta.NewSyncer(delta.SyncerConfig{
+		GraphClients: graphClients,
+		GraphBaseURL: graphBaseURL,
+		Fetcher:      fetcher,
+		Publisher:    publisher,
+		Dedup:        filter,
+		Store:        store,
+		SyncInterval: cfg.DeltaSyncInterval,
+	})
+
+	// Wire gap detection: lifecycle manager triggers delta sync
+	mgr.OnGapDetected = func(ctx context.Context, tenantID, userID string) {
+		// Find the right client
+		for _, t := range cfg.Tenants {
+			if t.TenantID == tenantID {
+				if client, ok := graphClients[t.Alias]; ok {
+					if err := syncer.SyncMailbox(ctx, client, tenantID, t.Alias, userID); err != nil {
+						slog.Error("gap delta sync failed",
+							"tenant", t.Alias,
+							"user", userID,
+							"error", err,
+						)
+					}
+				}
+				break
+			}
 		}
 	}
 
-	// --- Phase 2: Start webhook server BEFORE registering subscriptions ---
-	// Microsoft immediately validates the endpoint when StartSubscription is called,
-	// so the server must be listening before we make that call.
-	if webhookMode {
-		ready, err := webhook.Serve(ctx, cfg.WebhookPort, webhookHandlers)
+	// --- Phase 1: Start webhook server BEFORE registering subscriptions ---
+	// Graph validates the endpoint immediately when creating a subscription.
+	handler := webhook.NewHandler(fetcher, publisher, filter, store, mgr)
+	ready, err := webhook.Serve(ctx, cfg.WebhookPort, handler)
+	if err != nil {
+		slog.Error("failed to start webhook server", "error", err)
+		os.Exit(1)
+	}
+	<-ready
+	slog.Info("webhook server ready, proceeding to register subscriptions")
+
+	// --- Phase 2: Start lifecycle manager (discovers users + creates subscriptions) ---
+	if err := mgr.Start(ctx); err != nil {
+		slog.Error("failed to start lifecycle manager", "error", err)
+		os.Exit(1)
+	}
+
+	// --- Phase 3: Load delta links and start periodic delta sync ---
+	// Load existing delta links from Postgres into the syncer's cache
+	for _, tenant := range cfg.Tenants {
+		records, err := store.ListByTenant(ctx, tenant.TenantID)
 		if err != nil {
-			slog.Error("failed to start webhook server", "error", err)
-			os.Exit(1)
-		}
-		<-ready // Wait for the port to be bound
-		slog.Info("webhook server ready, proceeding to register subscriptions")
-	}
-
-	// --- Phase 3: Register subscriptions + start pollers ---
-	for _, tr := range tenants {
-		// Start Activity Feed subscription
-		// In webhook mode: register the webhook address (Microsoft will validate it now)
-		// In poll mode: no webhook (empty strings)
-		if err := tr.feedClient.StartSubscription(ctx, webhookAddr, cfg.WebhookAuthID); err != nil {
-			slog.Error("failed to start activity feed subscription",
-				"alias", tr.tenant.Alias,
+			slog.Error("failed to load subscriptions for delta links",
+				"tenant", tenant.Alias,
 				"error", err,
 			)
-			os.Exit(1)
+			continue
 		}
-
-		if webhookMode {
-			slog.Info("subscription registered with webhook",
-				"alias", tr.tenant.Alias,
-				"webhook_addr", webhookAddr,
-			)
-		} else {
-			// Poll mode: start background poller
-			tenant := tr.tenant
-			feedClient := tr.feedClient
-			fetcher := tr.fetcher
-			poller := activityfeed.NewPoller(feedClient, cfg.PollInterval, cfg.PollLookback,
-				func(ctx context.Context, event activityfeed.AuditEvent) error {
-					slog.Info("processing email event",
-						"tenant", tenant.Alias,
-						"operation", event.Operation,
-						"user_id", event.UserID,
-						"item_id", event.ItemID,
-						"subject", event.Subject,
-					)
-
-					if event.ItemID == "" {
-						slog.Warn("audit event has no ItemId, skipping fetch",
-							"tenant", tenant.Alias,
-							"event_id", event.ID,
-						)
-						return nil
-					}
-
-					// Dedup: skip events we've already processed
-					isNew, err := filter.IsNew(ctx, event.ID)
-					if err != nil {
-						slog.Warn("dedup check failed, proceeding anyway",
-							"event_id", event.ID, "error", err,
-						)
-					} else if !isNew {
-						slog.Debug("skipping duplicate event",
-							"event_id", event.ID, "tenant", tenant.Alias,
-						)
-						return nil
-					}
-
-					emailEvent, err := fetcher.FetchMessage(ctx, event.UserID, event.ItemID, tenant.TenantID, tenant.Alias)
-					if err != nil {
-						return fmt.Errorf("fetch message: %w", err)
-					}
-
-					if emailEvent == nil {
-						return nil
-					}
-
-					return publisher.PublishEmailEvent(ctx, emailEvent)
-				},
-			)
-
-			go poller.Run(ctx)
-			slog.Info("activity feed poller started",
-				"alias", tenant.Alias,
-				"interval", cfg.PollInterval,
-				"lookback", cfg.PollLookback,
-			)
+		for _, rec := range records {
+			if rec.DeltaLink != "" {
+				syncer.SetDeltaLink(rec.TenantID, rec.UserID, rec.DeltaLink)
+			}
 		}
 	}
+
+	// Build tenant info for periodic sync
+	type syncTenant struct {
+		TenantID    string
+		TenantAlias string
+		Users       []string
+		Client      *http.Client
+	}
+	var syncTenants []struct {
+		TenantID    string
+		TenantAlias string
+		Users       []string
+		Client      *http.Client
+	}
+	for _, tenant := range cfg.Tenants {
+		client, ok := graphClients[tenant.Alias]
+		if !ok {
+			continue
+		}
+		records, _ := store.ListByTenant(ctx, tenant.TenantID)
+		var users []string
+		for _, r := range records {
+			users = append(users, r.UserID)
+		}
+		syncTenants = append(syncTenants, struct {
+			TenantID    string
+			TenantAlias string
+			Users       []string
+			Client      *http.Client
+		}{
+			TenantID:    tenant.TenantID,
+			TenantAlias: tenant.Alias,
+			Users:       users,
+			Client:      client,
+		})
+	}
+	syncer.StartPeriodicSync(ctx, syncTenants)
 
 	// --- Health Check Server ---
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		// Check Redis
 		if err := publisher.Ping(r.Context()); err != nil {
 			http.Error(w, "redis unhealthy", http.StatusServiceUnavailable)
+			return
+		}
+		// Check Postgres
+		if err := pgPool.Ping(r.Context()); err != nil {
+			http.Error(w, "postgres unhealthy", http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -267,7 +298,10 @@ func main() {
 		sig := <-sigCh
 
 		slog.Info("received shutdown signal", "signal", sig)
-		cancel() // Stop all pollers
+		cancel() // Stop all background goroutines
+
+		mgr.Stop()
+		syncer.Stop()
 
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer shutdownCancel()
@@ -277,6 +311,7 @@ func main() {
 		}
 
 		rdb.Close()
+		pgPool.Close()
 	}()
 
 	slog.Info("ingestion service listening", "addr", addr)
@@ -290,7 +325,7 @@ func main() {
 
 // resolveWebhookURL resolves the webhook URL from config.
 //
-//   - Empty string → poll mode (no webhook)
+//   - Empty string → error (webhook is required)
 //   - "auto" → discover the public URL from a local ngrok container
 //   - Any other string → use as-is (production)
 func resolveWebhookURL(raw string) string {
@@ -304,7 +339,6 @@ func resolveWebhookURL(raw string) string {
 	}
 
 	// Auto-discover from ngrok's local API.
-	// The ngrok container exposes its API on http://ngrok:4040 inside Docker.
 	ngrokAPI := os.Getenv("NGROK_API_URL")
 	if ngrokAPI == "" {
 		ngrokAPI = "http://ngrok:4040"
@@ -312,7 +346,6 @@ func resolveWebhookURL(raw string) string {
 
 	slog.Info("discovering webhook URL from ngrok", "api", ngrokAPI)
 
-	// Retry a few times — ngrok may not be ready yet
 	var lastErr error
 	for attempt := 0; attempt < 10; attempt++ {
 		resp, err := http.Get(ngrokAPI + "/api/tunnels")
@@ -335,32 +368,27 @@ func resolveWebhookURL(raw string) string {
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			lastErr = err
-			slog.Warn("failed to decode ngrok response", "error", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		// Prefer HTTPS tunnel
 		for _, t := range result.Tunnels {
 			if t.Proto == "https" {
 				slog.Info("ngrok tunnel discovered", "url", t.PublicURL)
-				return t.PublicURL + "/webhook"
+				return t.PublicURL
 			}
 		}
 
-		// Fall back to any tunnel
 		if len(result.Tunnels) > 0 {
 			url := result.Tunnels[0].PublicURL
 			slog.Info("ngrok tunnel discovered", "url", url)
-			return url + "/webhook"
+			return url
 		}
 
 		lastErr = fmt.Errorf("no tunnels found")
 		time.Sleep(2 * time.Second)
 	}
 
-	slog.Error("failed to discover ngrok tunnel, falling back to poll mode",
-		"error", lastErr,
-	)
+	slog.Error("failed to discover ngrok tunnel", "error", lastErr)
 	return ""
 }

@@ -2,9 +2,13 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY pyproject.toml .
-COPY src/ src/
-COPY tests/ tests/
+# Install shared package first (shared models, DB helpers, Celery defaults)
+COPY shared/ /app/shared/
+RUN pip install --no-cache-dir -e /app/shared
+
+COPY verdict/pyproject.toml .
+COPY verdict/src/ src/
+COPY verdict/tests/ tests/
 
 RUN pip install --no-cache-dir -e ".[dev]"
 

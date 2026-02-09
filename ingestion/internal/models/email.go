@@ -12,32 +12,44 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package models defines shared data types used across the ingestion service.
+// Package models defines the data structures shared across the ingestion service.
 package models
 
-// EmailEvent is the canonical email representation sent to the analysis queue.
-// Must match the Python EmailEvent dataclass in analysis/models.py.
-type EmailEvent struct {
-	MessageID   string            `json:"message_id"`
-	UserID      string            `json:"user_id"`
-	TenantID    string            `json:"tenant_id"`
-	TenantAlias string            `json:"tenant_alias"`
-	Sender      string            `json:"sender"`
-	Subject     string            `json:"subject"`
-	Body        EmailBody         `json:"body"`
-	Headers     map[string]string `json:"headers"`
-	Attachments []Attachment      `json:"attachments"`
+// EmailAddress represents a sender or recipient with an address and optional name.
+type EmailAddress struct {
+	Address string `json:"address"`
+	Name    string `json:"name,omitempty"`
 }
 
-// EmailBody holds the email content.
+// EmailBody represents the message body content.
 type EmailBody struct {
 	ContentType string `json:"content_type"`
 	Content     string `json:"content"`
 }
 
-// Attachment represents an email attachment.
+// Attachment represents a file attached to an email.
 type Attachment struct {
-	Name        string `json:"name"`
-	ContentType string `json:"content_type"`
-	Size        int    `json:"size"`
+	Name         string `json:"name"`
+	ContentType  string `json:"content_type"`
+	Size         int    `json:"size"`
+	ContentBytes string `json:"content_bytes,omitempty"`
+}
+
+// EmailEvent represents a fully parsed email ready for the analysis pipeline.
+//
+// This struct's JSON serialisation MUST match the shared/schemas/email_event.json
+// contract. The Python analysis service deserialises this JSON via
+// EmailEvent.from_dict().
+type EmailEvent struct {
+	MessageID   string            `json:"message_id"`
+	UserID      string            `json:"user_id"`
+	TenantID    string            `json:"tenant_id"`
+	TenantAlias string            `json:"tenant_alias"`
+	ReceivedAt  string            `json:"received_at,omitempty"`
+	From        EmailAddress      `json:"from"`
+	To          []EmailAddress    `json:"to"`
+	Subject     string            `json:"subject"`
+	Body        EmailBody         `json:"body"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Attachments []Attachment      `json:"attachments"`
 }

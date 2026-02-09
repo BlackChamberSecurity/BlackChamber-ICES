@@ -3,11 +3,12 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bcem-analysis"
+name = "ices-analysis"
 version = "0.1.0"
-description = "BCEM Email Security Scanner — Analysis Engine"
+description = "BlackChamber ICES — Analysis Engine"
 requires-python = ">=3.10"
 dependencies = [
+    "ices-shared",
     "celery[redis]>=5.3,<6",
     "redis>=5.0,<6",
     "psycopg[binary]>=3.1,<4",

@@ -13,23 +13,19 @@
 # limitations under the License.
 
 """
-BCEM Analysis Engine — Celery Tasks
+BlackChamber ICES Analysis Engine — Celery Tasks
 
 Dual-write: analysis results go to both Redis (for real-time policy eval)
 and Postgres (for reporting/audit).
 """
 import json
 import logging
-import sys
 
 from analysis.celery_app import app
 from analysis.models import EmailEvent
 from analysis.pipeline import run_pipeline
 
 logger = logging.getLogger(__name__)
-
-# Add shared/ to path for db module
-sys.path.insert(0, "/app/shared")
 
 
 @app.task(
@@ -66,7 +62,7 @@ def analyze_email(self, email_event_json: str):
 
         # --- Dual-write: Postgres (best-effort) ---
         try:
-            from db import get_connection, store_email_event, store_analysis_results
+            from ices_shared.db import get_connection, store_email_event, store_analysis_results
             with get_connection() as conn:
                 event_id = store_email_event(conn, verdict_dict)
                 store_analysis_results(conn, event_id, verdict_dict)

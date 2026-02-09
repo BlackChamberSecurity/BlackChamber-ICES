@@ -1,5 +1,5 @@
 # =============================================================================
-# BCEM Configuration
+# BlackChamber ICES Configuration
 # =============================================================================
 
 tenants:
@@ -8,6 +8,9 @@ tenants:
     tenant_id: "${M365_TENANT_ID_1}"
     client_id: "${M365_CLIENT_ID_1}"
     client_secret: "${M365_CLIENT_SECRET_1}"
+    # Hybrid discovery: empty include_users = auto-discover all licensed users
+    include_users: []
+    exclude_users: []
 
   # Add more tenants here:
   # - alias: "acme-corp"
@@ -15,6 +18,9 @@ tenants:
   #   tenant_id: "${M365_TENANT_ID_2}"
   #   client_id: "${M365_CLIENT_ID_2}"
   #   client_secret: "${M365_CLIENT_SECRET_2}"
+  #   include_users: []
+  #   exclude_users:
+  #     - "noreply@acme-corp.com"
 
 redis:
   url: "${REDIS_URL:-redis://localhost:6379/0}"
@@ -23,10 +29,18 @@ redis:
     verdicts: "verdicts"
 
 # =============================================================================
+# Ingestion — subscription lifecycle and delta sync
+# =============================================================================
+ingestion:
+  subscription_renewal_buffer: "30m"
+  delta_sync_interval: "15m"
+  delta_lookback_on_start: "24h"
+
+# =============================================================================
 # Database
 # =============================================================================
 database:
-  url: "${DATABASE_URL:-postgresql://bcem:bcem_dev@postgres:5432/bcem}"
+  url: "${DATABASE_URL:-postgresql://ices:ices_dev@postgres:5432/ices}"
 
 # =============================================================================
 # Policies — rules that reference observation keys and values

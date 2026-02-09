@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-BCEM Verdict Worker — Celery Tasks
+BlackChamber ICES Verdict Worker — Celery Tasks
 
 Two tasks:
 1. execute_verdict: Process a verdict (evaluate policies, buffer action for batch)
@@ -22,7 +22,6 @@ Two tasks:
 import json
 import logging
 import os
-import sys
 
 import yaml
 
@@ -34,9 +33,6 @@ from verdict.batch_client import BatchClient
 from verdict.token_manager import TokenManager
 
 logger = logging.getLogger(__name__)
-
-# Add shared/ to path for db module
-sys.path.insert(0, "/app/shared")
 
 # Lazy-initialised singletons (created on first use by each worker process)
 _dispatcher = None
@@ -73,10 +69,38 @@ def _get_dispatcher() -> Dispatcher:
 
 
 def _get_token_manager() -> TokenManager:
-    """Get or create the token manager (one per worker process)."""
+    """Get or create the token manager (one per worker process).
+
+    Loads tenant credentials from config.yaml. Falls back to env vars
+    for single-tenant setups.
+    """
     global _token_manager
     if _token_manager is None:
-        _token_manager = TokenManager()
+        from verdict.token_manager import TenantCredentials
+        tenants = {}
+        # Load tenant credentials from the same config.yaml used for policies
+        config_paths = [
+            "/app/config/config.yaml",
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "config", "config.yaml"),
+        ]
+        for path in config_paths:
+            try:
+                with open(path) as f:
+                    config = yaml.safe_load(f) or {}
+                for t in config.get("tenants", []):
+                    tid = t.get("tenant_id", "")
+                    cid = t.get("client_id", "")
+                    csecret = t.get("client_secret", "")
+                    if tid and cid and csecret:
+                        tenants[tid] = TenantCredentials(
+                            tenant_id=tid,
+                            client_id=cid,
+                            client_secret=csecret,
+                        )
+                break
+            except FileNotFoundError:
+                continue
+        _token_manager = TokenManager(tenants=tenants if tenants else None)
     return _token_manager
 
 
@@ -128,7 +152,7 @@ def execute_verdict(self, verdict_json: str):
         # --- Persist policy outcome to Postgres ---
         decision = result.get("decision", {}) if result else {}
         try:
-            from db import get_connection, store_policy_outcome
+            from ices_shared.db import get_connection, store_policy_outcome
             with get_connection() as conn:
                 store_policy_outcome(
                     conn,

@@ -13,44 +13,29 @@
 # limitations under the License.
 
 """
-BCEM Analysis Engine — Celery Application Configuration
+BlackChamber ICES Analysis Engine — Celery Application
 
-This is the single source of truth for Celery configuration in the analysis
-service. All workers import this app instance.
+Configures the Celery worker that processes email analysis tasks.
+Uses shared defaults from ices_shared.celery_defaults with
+analysis-specific task routing.
 """
 import os
 from celery import Celery
 
-# Redis URL from environment (matches docker-compose / .env)
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+from ices_shared.celery_defaults import CELERY_DEFAULTS
 
 app = Celery("analysis")
 
-app.config_from_object({
-    # Broker (where tasks come from)
-    "broker_url": REDIS_URL,
-
-    # Result backend (where task results are stored)
-    "result_backend": REDIS_URL,
-
-    # Serialisation
-    "task_serializer": "json",
-    "result_serializer": "json",
-    "accept_content": ["json"],
-
-    # Task routing — analysis tasks go to the "emails" queue
+# Start with shared defaults, then apply analysis-specific overrides
+config = {**CELERY_DEFAULTS}
+config.update({
+    # Task routing — analysis tasks go to the 'emails' queue
     "task_routes": {
         "analysis.tasks.analyze_email": {"queue": "emails"},
     },
-
-    # Reliability
-    "task_acks_late": True,                # Acknowledge after processing (not before)
-    "worker_prefetch_multiplier": 1,       # Don't hoard tasks; take one at a time
-    "task_reject_on_worker_lost": True,    # Re-queue if worker crashes
-
-    # Timezone
-    "timezone": "UTC",
 })
+
+app.config_from_object(config)
 
 # Auto-discover tasks in the analysis package
 app.autodiscover_tasks(["analysis"])

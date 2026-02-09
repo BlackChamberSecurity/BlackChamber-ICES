@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ices-shared"
+version = "0.1.0"
+description = "BlackChamber ICES — Shared models, DB helpers, and Celery defaults"
+requires-python = ">=3.10"
+dependencies = [
+    "psycopg[binary]>=3.1,<4",
+    "redis>=5.0,<6",
+    "pyyaml>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package webhook handles incoming Activity Feed webhook notifications.
-// When a webhook address is registered with the Management Activity API,
-// Microsoft POSTs an array of ContentBlob references whenever new audit
-// content is available. This handler receives those notifications and
-// processes them through the same pipeline as the polling path.
+// Package webhook handles incoming Graph API change notifications and
+// lifecycle events. When a subscribed mailbox receives a new message,
+// Microsoft Graph POSTs a notification to the registered webhook URL.
+// This handler fetches the full message and publishes it to the
+// analysis pipeline via Redis.
 package webhook
 
 import (
@@ -29,233 +29,267 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bcem/ingestion/internal/activityfeed"
-	"github.com/bcem/ingestion/internal/config"
 	"github.com/bcem/ingestion/internal/dedup"
 	"github.com/bcem/ingestion/internal/graph"
 	"github.com/bcem/ingestion/internal/queue"
+	"github.com/bcem/ingestion/internal/subscription"
 )
 
-// Handler processes Activity Feed webhook notifications.
-type Handler struct {
-	feedClient *activityfeed.Client
-	fetcher    *graph.Fetcher
-	publisher  *queue.Publisher
-	filter     *dedup.Filter
-	authID     string
-	tenant     config.TenantConfig
+// ChangeNotification represents a single Graph API change notification.
+type ChangeNotification struct {
+	SubscriptionID                 string `json:"subscriptionId"`
+	ChangeType                     string `json:"changeType"`
+	Resource                       string `json:"resource"`
+	ClientState                    string `json:"clientState"`
+	TenantID                       string `json:"tenantId"`
+	LifecycleEvent                 string `json:"lifecycleEvent"`
+	SubscriptionExpirationDateTime string `json:"subscriptionExpirationDateTime"`
 }
 
-// NewHandler creates a webhook handler.
+// NotificationPayload is the wrapper Graph sends.
+type NotificationPayload struct {
+	Value []ChangeNotification `json:"value"`
+}
+
+// Handler processes Graph API change notifications.
+type Handler struct {
+	fetcher   *graph.Fetcher
+	publisher *queue.Publisher
+	filter    *dedup.Filter
+	store     *subscription.Store
+	manager   *subscription.LifecycleManager
+}
+
+// NewHandler creates a change notification handler.
 func NewHandler(
-	feedClient *activityfeed.Client,
 	fetcher *graph.Fetcher,
 	publisher *queue.Publisher,
 	filter *dedup.Filter,
-	authID string,
-	tenant config.TenantConfig,
+	store *subscription.Store,
+	manager *subscription.LifecycleManager,
 ) *Handler {
 	return &Handler{
-		feedClient: feedClient,
-		fetcher:    fetcher,
-		publisher:  publisher,
-		filter:     filter,
-		authID:     authID,
-		tenant:     tenant,
+		fetcher:   fetcher,
+		publisher: publisher,
+		filter:    filter,
+		store:     store,
+		manager:   manager,
 	}
 }
 
-// ServeHTTP handles webhook requests from the Management Activity API.
+// ServeNotification handles change notification webhook requests.
 //
-// Non-POST requests are treated as validation probes — Microsoft sends one when
-// the subscription is created to verify the endpoint is reachable and returns 200.
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+// Graph API validation flow:
+//   - When creating a subscription, Graph sends a POST with ?validationToken=<token>
+//   - We must respond 200 OK with the token in plain text
+//
+// Normal notification flow:
+//   - Graph POSTs a JSON body with an array of ChangeNotification objects
+//   - We respond 202 Accepted immediately
+//   - Process notifications in the background
+func (h *Handler) ServeNotification(w http.ResponseWriter, r *http.Request) {
+	// Handle validation probe
+	if token := r.URL.Query().Get("validationToken"); token != "" {
+		slog.Info("subscription validation probe received")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(token))
+		return
+	}
+
 	if r.Method != http.MethodPost {
-		// Validation probe: respond 200 OK.
-		slog.Info("webhook validation probe received",
-			"method", r.Method,
-			"tenant", h.tenant.Alias,
-		)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	// Validate Webhook-AuthID header (skip for validation probes)
-	if h.authID != "" {
-		got := r.Header.Get("Webhook-AuthID")
-		if got != "" && got != h.authID {
-			slog.Warn("webhook auth mismatch",
-				"expected", h.authID,
-				"got", got,
-			)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-	}
-
-	// Read body — may be a validation probe or a real notification.
-	// Microsoft sends a validation POST when the subscription is created.
-	// We must return 200 OK for validation to succeed.
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		slog.Error("failed to read webhook body", "error", err)
-		w.WriteHeader(http.StatusOK) // Still return 200 for safety
+		slog.Error("failed to read notification body", "error", err)
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 
-	// Try to decode as notification (array of content blobs)
-	var blobs []activityfeed.ContentBlob
-	if err := json.Unmarshal(body, &blobs); err != nil {
-		// Not a valid notification — likely a validation probe
-		slog.Info("webhook probe/validation received (body not a notification array)",
-			"tenant", h.tenant.Alias,
+	var payload NotificationPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		slog.Info("notification body not valid JSON, treating as probe",
 			"body_len", len(body),
 		)
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 
-	if len(blobs) == 0 {
-		slog.Debug("webhook notification with empty blob array", "tenant", h.tenant.Alias)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
+	// Respond immediately — Graph expects a fast response
+	w.WriteHeader(http.StatusAccepted)
 
-	slog.Info("webhook notification received",
-		"blobs", len(blobs),
-		"tenant", h.tenant.Alias,
-	)
-
-	// Respond immediately — Microsoft expects 200 OK promptly.
-	// Process blobs in the background.
-	w.WriteHeader(http.StatusOK)
-
-	go h.processBlobs(context.Background(), blobs)
+	// Process in background
+	go h.processNotifications(context.Background(), payload.Value)
 }
 
-// processBlobs fetches and processes content blobs, filtering for email events.
-// This mirrors the logic in poller.poll().
-func (h *Handler) processBlobs(ctx context.Context, blobs []activityfeed.ContentBlob) {
-	for _, blob := range blobs {
-		slog.Info("webhook: fetching blob content",
-			"content_uri", blob.ContentURI,
-			"content_id", blob.ContentID,
-			"content_type", blob.ContentType,
-		)
+// ServeLifecycle handles lifecycle notification webhook requests.
+func (h *Handler) ServeLifecycle(w http.ResponseWriter, r *http.Request) {
+	// Lifecycle notifications also use the validation flow
+	if token := r.URL.Query().Get("validationToken"); token != "" {
+		slog.Info("lifecycle validation probe received")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(token))
+		return
+	}
 
-		events, err := h.feedClient.FetchBlob(ctx, blob.ContentURI)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	var payload NotificationPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+
+	// Extract tenant alias from path
+	parts := strings.Split(r.URL.Path, "/")
+	tenantAlias := ""
+	if len(parts) >= 3 {
+		tenantAlias = parts[2] // /lifecycle/{tenant}
+	}
+
+	for _, n := range payload.Value {
+		if n.LifecycleEvent != "" {
+			h.manager.HandleLifecycleEvent(
+				context.Background(),
+				n.LifecycleEvent,
+				n.SubscriptionID,
+				tenantAlias,
+			)
+		}
+	}
+}
+
+// processNotifications handles each change notification.
+func (h *Handler) processNotifications(ctx context.Context, notifications []ChangeNotification) {
+	for _, n := range notifications {
+		// Skip non-creation events (we only care about new messages)
+		if n.ChangeType != "created" {
+			slog.Debug("skipping non-created notification",
+				"change_type", n.ChangeType,
+				"resource", n.Resource,
+			)
+			continue
+		}
+
+		// Parse resource: "/users/{userId}/messages/{messageId}"
+		userID, messageID, err := parseResource(n.Resource)
 		if err != nil {
-			slog.Error("webhook: failed to fetch blob",
-				"blob_id", blob.ContentID,
+			slog.Warn("failed to parse notification resource",
+				"resource", n.Resource,
 				"error", err,
 			)
 			continue
 		}
 
-		slog.Info("webhook: blob fetched",
-			"blob_id", blob.ContentID,
-			"events", len(events),
+		// Validate clientState against stored subscription
+		rec, err := h.store.Get(ctx, n.TenantID, userID)
+		if err != nil {
+			slog.Error("failed to look up subscription for validation",
+				"tenant", n.TenantID,
+				"user", userID,
+				"error", err,
+			)
+			// Process anyway — don't lose the notification
+		} else if rec != nil && n.ClientState != "" && rec.ClientState != n.ClientState {
+			slog.Warn("clientState mismatch — possible spoofed notification",
+				"expected", rec.ClientState,
+				"got", n.ClientState,
+			)
+			continue
+		}
+
+		// Update last notification time
+		if rec != nil {
+			_ = h.store.TouchNotification(ctx, n.TenantID, userID)
+		}
+
+		// Dedup
+		isNew, err := h.filter.IsNew(ctx, messageID)
+		if err != nil {
+			slog.Warn("dedup check failed, proceeding", "error", err)
+		} else if !isNew {
+			slog.Debug("skipping duplicate message", "message_id", messageID)
+			continue
+		}
+
+		// Determine tenant alias from subscription record
+		tenantAlias := ""
+		if rec != nil {
+			tenantAlias = rec.TenantAlias
+		}
+
+		slog.Info("processing change notification",
+			"tenant", tenantAlias,
+			"user", userID,
+			"message_id", messageID,
 		)
 
-		for _, event := range events {
-			slog.Info("webhook: inspecting event",
-				"event_id", event.ID,
-				"operation", event.Operation,
-				"workload", event.Workload,
-				"user_id", event.UserID,
-				"item_id", event.ItemID,
-				"subject", event.Subject,
+		// Fetch full message
+		event, err := h.fetcher.FetchMessage(ctx, userID, messageID, n.TenantID, tenantAlias)
+		if err != nil {
+			slog.Error("fetch message failed",
+				"message_id", messageID,
+				"error", err,
 			)
+			continue
+		}
 
-			// Only process Exchange workload events
-			if !strings.EqualFold(event.Workload, "Exchange") {
-				slog.Info("webhook: skipping non-Exchange workload",
-					"workload", event.Workload,
-					"operation", event.Operation,
-					"event_id", event.ID,
-				)
-				continue
-			}
+		if event == nil {
+			continue
+		}
 
-			if event.ItemID == "" {
-				slog.Warn("webhook: audit event has no ItemId, skipping",
-					"event_id", event.ID,
-				)
-				continue
-			}
-
-			// Dedup
-			isNew, err := h.filter.IsNew(ctx, event.ID)
-			if err != nil {
-				slog.Warn("webhook: dedup check failed, proceeding",
-					"event_id", event.ID, "error", err,
-				)
-			} else if !isNew {
-				slog.Debug("webhook: skipping duplicate event",
-					"event_id", event.ID,
-				)
-				continue
-			}
-
-			slog.Info("webhook: processing email event",
-				"tenant", h.tenant.Alias,
-				"operation", event.Operation,
-				"user_id", event.UserID,
-				"item_id", event.ItemID,
+		// Publish to Redis
+		if err := h.publisher.PublishEmailEvent(ctx, event); err != nil {
+			slog.Error("publish failed",
+				"message_id", messageID,
+				"error", err,
 			)
-
-			emailEvent, err := h.fetcher.FetchMessage(ctx, event.UserID, event.ItemID, h.tenant.TenantID, h.tenant.Alias)
-			if err != nil {
-				slog.Error("webhook: fetch message failed",
-					"event_id", event.ID,
-					"error", err,
-				)
-				continue
-			}
-
-			if emailEvent == nil {
-				continue
-			}
-
-			if err := h.publisher.PublishEmailEvent(ctx, emailEvent); err != nil {
-				slog.Error("webhook: publish failed",
-					"event_id", event.ID,
-					"error", err,
-				)
-			}
 		}
 	}
 }
 
+// parseResource extracts userID and messageID from a Graph notification resource string.
+// Format: "users/{userId}/messages/{messageId}"
+func parseResource(resource string) (userID, messageID string, err error) {
+	// Remove leading slash if present
+	resource = strings.TrimPrefix(resource, "/")
+
+	parts := strings.Split(resource, "/")
+	// Expected: ["users", "{userId}", "messages", "{messageId}"]
+	// Graph may send capitalised variants: "Users", "Messages"
+	if len(parts) != 4 || !strings.EqualFold(parts[0], "users") || !strings.EqualFold(parts[2], "messages") {
+		return "", "", fmt.Errorf("unexpected resource format: %s", resource)
+	}
+
+	return parts[1], parts[3], nil
+}
+
 // Serve starts the webhook HTTP server on the given port.
 // It binds the port immediately and signals readiness via the returned channel
-// before starting to accept connections. This ensures the port is open before
-// StartSubscription is called (Microsoft validates the endpoint immediately).
-func Serve(ctx context.Context, port int, handlers map[string]*Handler) (<-chan struct{}, error) {
+// before starting to accept connections.
+func Serve(ctx context.Context, port int, handler *Handler) (<-chan struct{}, error) {
 	mux := http.NewServeMux()
 
-	// Each tenant gets its own path: /webhook/{alias}
-	for alias, handler := range handlers {
-		path := fmt.Sprintf("/webhook/%s", alias)
-		mux.Handle(path, handler)
-		slog.Info("webhook endpoint registered",
-			"path", path,
-			"tenant", alias,
-		)
-	}
+	// Change notification endpoints — catch-all pattern
+	mux.HandleFunc("/webhook/", handler.ServeNotification)
 
-	// Catch-all /webhook for single-tenant setups
-	if len(handlers) == 1 {
-		for _, handler := range handlers {
-			mux.Handle("/webhook", handler)
-		}
-	}
+	// Lifecycle notification endpoints
+	mux.HandleFunc("/lifecycle/", handler.ServeLifecycle)
 
 	server := &http.Server{
 		Handler: mux,
 	}
 
-	// Bind port immediately so it's ready for validation probes.
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return nil, fmt.Errorf("bind webhook port %d: %w", port, err)
@@ -271,7 +305,7 @@ func Serve(ctx context.Context, port int, handlers map[string]*Handler) (<-chan 
 
 	go func() {
 		slog.Info("webhook server listening", "port", port)
-		close(ready) // Signal that the port is bound and ready
+		close(ready)
 		if err := server.Serve(ln); err != http.ErrServerClosed {
 			slog.Error("webhook server error", "error", err)
 		}

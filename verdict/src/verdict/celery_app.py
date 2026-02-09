@@ -13,49 +13,38 @@
 # limitations under the License.
 
 """
-BCEM Verdict Worker — Celery Application Configuration
+BlackChamber ICES Verdict Worker — Celery Application
 
-Single source of truth for Celery config in the verdict service.
-Includes Celery Beat schedule for periodic batch flushes.
+Configures the Celery worker for policy evaluation and Graph API actions.
+Uses shared defaults from ices_shared.celery_defaults with
+verdict-specific task routing and beat schedule.
 """
 import os
 from celery import Celery
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-BATCH_FLUSH_INTERVAL = int(os.environ.get("VERDICT_BATCH_FLUSH_INTERVAL", "2"))
+from ices_shared.celery_defaults import CELERY_DEFAULTS
 
 app = Celery("verdict")
 
-app.config_from_object({
-    # Broker
-    "broker_url": REDIS_URL,
-    "result_backend": REDIS_URL,
+# Batch flush interval (seconds) — configurable via env var
+BATCH_FLUSH_INTERVAL = int(os.environ.get("VERDICT_BATCH_FLUSH_INTERVAL", "30"))
 
-    # Serialisation
-    "task_serializer": "json",
-    "result_serializer": "json",
-    "accept_content": ["json"],
-
-    # Task routing
+# Start with shared defaults, then apply verdict-specific overrides
+config = {**CELERY_DEFAULTS}
+config.update({
+    # Task routing — verdict tasks go to the 'verdicts' queue
     "task_routes": {
         "verdict.tasks.execute_verdict": {"queue": "verdicts"},
-        "verdict.tasks.flush_batch": {"queue": "verdicts"},
     },
 
-    # Reliability
-    "task_acks_late": True,
-    "worker_prefetch_multiplier": 1,
-    "task_reject_on_worker_lost": True,
-
-    # Celery Beat schedule — periodic batch flush
+    # Periodic tasks — batch flush timer
     "beat_schedule": {
-        "flush-verdict-batch": {
+        "flush-graph-batch": {
             "task": "verdict.tasks.flush_batch",
-            "schedule": float(BATCH_FLUSH_INTERVAL),
+            "schedule": BATCH_FLUSH_INTERVAL,
         },
     },
-
-    "timezone": "UTC",
 })
 
+app.config_from_object(config)
 app.autodiscover_tasks(["verdict"])

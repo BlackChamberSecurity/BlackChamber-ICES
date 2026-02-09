@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/bcem/ingestion/internal/models"
 )
@@ -29,8 +30,15 @@ type graphMessage struct {
 	From    struct {
 		EmailAddress struct {
 			Address string `json:"address"`
+			Name    string `json:"name"`
 		} `json:"emailAddress"`
 	} `json:"from"`
+	ToRecipients []struct {
+		EmailAddress struct {
+			Address string `json:"address"`
+			Name    string `json:"name"`
+		} `json:"emailAddress"`
+	} `json:"toRecipients"`
 	Body struct {
 		ContentType string `json:"contentType"`
 		Content     string `json:"content"`
@@ -54,13 +62,27 @@ func parseGraphMessage(body io.Reader, userID, tenantID, tenantAlias string) (*m
 		headers[h.Name] = h.Value
 	}
 
+	// Build recipients list from Graph API format
+	to := make([]models.EmailAddress, 0, len(msg.ToRecipients))
+	for _, r := range msg.ToRecipients {
+		to = append(to, models.EmailAddress{
+			Address: r.EmailAddress.Address,
+			Name:    r.EmailAddress.Name,
+		})
+	}
+
 	event := &models.EmailEvent{
 		MessageID:   msg.ID,
 		UserID:      userID,
 		TenantID:    tenantID,
 		TenantAlias: tenantAlias,
-		Sender:      msg.From.EmailAddress.Address,
-		Subject:     msg.Subject,
+		ReceivedAt:  time.Now().UTC().Format(time.RFC3339),
+		From: models.EmailAddress{
+			Address: msg.From.EmailAddress.Address,
+			Name:    msg.From.EmailAddress.Name,
+		},
+		To:      to,
+		Subject: msg.Subject,
 		Body: models.EmailBody{
 			ContentType: msg.Body.ContentType,
 			Content:     msg.Body.Content,

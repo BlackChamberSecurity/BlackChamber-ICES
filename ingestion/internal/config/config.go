@@ -25,25 +25,30 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TenantConfig holds credentials for a single tenant.
+// TenantConfig holds credentials and user discovery settings for a single tenant.
 type TenantConfig struct {
-	Alias        string `yaml:"alias"`
-	Provider     string `yaml:"provider"` // "m365" or "google" (future)
-	TenantID     string `yaml:"tenant_id"`
-	ClientID     string `yaml:"client_id"`
-	ClientSecret string `yaml:"client_secret"`
+	Alias        string   `yaml:"alias"`
+	Provider     string   `yaml:"provider"` // "m365" or "google" (future)
+	TenantID     string   `yaml:"tenant_id"`
+	ClientID     string   `yaml:"client_id"`
+	ClientSecret string   `yaml:"client_secret"`
+	IncludeUsers []string `yaml:"include_users"` // explicit user list (empty = auto-discover)
+	ExcludeUsers []string `yaml:"exclude_users"` // users to exclude from discovery
 }
 
 // Config holds all configuration for the ingestion service.
 type Config struct {
 	Tenants []TenantConfig
 
-	// Activity Feed
-	PollInterval time.Duration
-	PollLookback time.Duration
+	// Database
+	DatabaseURL string
 
-	// Webhook — when WebhookURL is set, push mode is used instead of polling.
-	// Set to "auto" to discover the URL from a local ngrok container.
+	// Subscription lifecycle
+	SubscriptionRenewalBuffer time.Duration
+	DeltaSyncInterval         time.Duration
+	DeltaLookbackOnStart      time.Duration
+
+	// Webhook
 	WebhookURL    string
 	WebhookAuthID string
 	WebhookPort   int
@@ -59,11 +64,13 @@ type Config struct {
 // rawConfig mirrors the YAML structure for unmarshalling.
 type rawConfig struct {
 	Tenants []struct {
-		Alias        string `yaml:"alias"`
-		Provider     string `yaml:"provider"`
-		TenantID     string `yaml:"tenant_id"`
-		ClientID     string `yaml:"client_id"`
-		ClientSecret string `yaml:"client_secret"`
+		Alias        string   `yaml:"alias"`
+		Provider     string   `yaml:"provider"`
+		TenantID     string   `yaml:"tenant_id"`
+		ClientID     string   `yaml:"client_id"`
+		ClientSecret string   `yaml:"client_secret"`
+		IncludeUsers []string `yaml:"include_users"`
+		ExcludeUsers []string `yaml:"exclude_users"`
 	} `yaml:"tenants"`
 	Redis struct {
 		URL    string `yaml:"url"`
@@ -71,6 +78,14 @@ type rawConfig struct {
 			Emails string `yaml:"emails"`
 		} `yaml:"queues"`
 	} `yaml:"redis"`
+	Database struct {
+		URL string `yaml:"url"`
+	} `yaml:"database"`
+	Ingestion struct {
+		SubscriptionRenewalBuffer string `yaml:"subscription_renewal_buffer"`
+		DeltaSyncInterval         string `yaml:"delta_sync_interval"`
+		DeltaLookbackOnStart      string `yaml:"delta_lookback_on_start"`
+	} `yaml:"ingestion"`
 }
 
 // Load reads configuration from config.yaml (with env var expansion) and
@@ -92,14 +107,16 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		PollInterval:  envOrDefaultDuration("POLL_INTERVAL", 60*time.Second),
-		PollLookback:  envOrDefaultDuration("POLL_LOOKBACK", 3*time.Hour),
-		WebhookURL:    envOrDefault("WEBHOOK_URL", ""),
-		WebhookAuthID: envOrDefault("WEBHOOK_AUTH_ID", ""),
-		WebhookPort:   envOrDefaultInt("WEBHOOK_PORT", 8081),
-		RedisURL:      firstNonEmpty(raw.Redis.URL, envOrDefault("REDIS_URL", "redis://localhost:6379/0")),
-		EmailsQueue:   firstNonEmpty(raw.Redis.Queues.Emails, envOrDefault("EMAILS_QUEUE", "emails")),
-		Port:          envOrDefaultInt("PORT", 8080),
+		DatabaseURL:               firstNonEmpty(raw.Database.URL, envOrDefault("DATABASE_URL", "postgresql://ices:ices_dev@postgres:5432/ices")),
+		SubscriptionRenewalBuffer: parseDurationOrDefault(raw.Ingestion.SubscriptionRenewalBuffer, envOrDefault("SUBSCRIPTION_RENEWAL_BUFFER", ""), 30*time.Minute),
+		DeltaSyncInterval:         parseDurationOrDefault(raw.Ingestion.DeltaSyncInterval, envOrDefault("DELTA_SYNC_INTERVAL", ""), 15*time.Minute),
+		DeltaLookbackOnStart:      parseDurationOrDefault(raw.Ingestion.DeltaLookbackOnStart, envOrDefault("DELTA_LOOKBACK_ON_START", ""), 24*time.Hour),
+		WebhookURL:                envOrDefault("WEBHOOK_URL", ""),
+		WebhookAuthID:             envOrDefault("WEBHOOK_AUTH_ID", ""),
+		WebhookPort:               envOrDefaultInt("WEBHOOK_PORT", 8081),
+		RedisURL:                  firstNonEmpty(raw.Redis.URL, envOrDefault("REDIS_URL", "redis://localhost:6379/0")),
+		EmailsQueue:               firstNonEmpty(raw.Redis.Queues.Emails, envOrDefault("EMAILS_QUEUE", "emails")),
+		Port:                      envOrDefaultInt("PORT", 8080),
 	}
 
 	// Build tenant configs
@@ -110,16 +127,17 @@ func Load() (*Config, error) {
 			TenantID:     t.TenantID,
 			ClientID:     t.ClientID,
 			ClientSecret: t.ClientSecret,
+			IncludeUsers: t.IncludeUsers,
+			ExcludeUsers: t.ExcludeUsers,
 		}
 
 		// Validate required fields
 		if tc.TenantID == "" || tc.ClientID == "" || tc.ClientSecret == "" {
-			// Skip tenants with empty credentials (commented out in YAML)
 			continue
 		}
 
 		if tc.Alias == "" {
-			tc.Alias = tc.TenantID[:8] // Use first 8 chars of tenant ID as fallback
+			tc.Alias = tc.TenantID[:8]
 		}
 
 		if tc.Provider == "" {
@@ -152,8 +170,12 @@ func envOrDefaultInt(key string, fallback int) int {
 	return fallback
 }
 
-func envOrDefaultDuration(key string, fallback time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
+func parseDurationOrDefault(yamlVal, envVal string, fallback time.Duration) time.Duration {
+	for _, v := range []string{yamlVal, envVal} {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
 		}

@@ -13,69 +13,39 @@
 # limitations under the License.
 
 """
-BCEM Verdict Worker — Data Models
+BlackChamber ICES Verdict Worker — Data Models
 
-Mirrors the analysis engine's Observation model for deserialization.
+These models represent the analysis results as they arrive from the
+analysis worker via the Redis queue for policy evaluation.
 """
+
 from dataclasses import dataclass, field
 from typing import Any
 
+from ices_shared.models import Observation, AnalysisResult
 
-@dataclass
-class Observation:
-    """A single typed fact from an analyzer."""
-    key: str = ""
-    value: Any = ""
-    type: str = "text"
-
-    def to_dict(self) -> dict:
-        return {"key": self.key, "value": self.value, "type": self.type}
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "Observation":
-        return cls(
-            key=data.get("key", ""),
-            value=data.get("value", ""),
-            type=data.get("type", "text"),
-        )
-
-
-@dataclass
-class VerdictResult:
-    """A single analyzer's observations."""
-    analyzer: str = ""
-    observations: list = field(default_factory=list)  # list[Observation]
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Get the value of an observation by key."""
-        for obs in self.observations:
-            if obs.key == key:
-                return obs.value
-        return default
-
-    def get_all(self, key: str) -> list:
-        """Get all values for a given observation key."""
-        return [obs.value for obs in self.observations if obs.key == key]
+# Backward-compatible alias — existing code references VerdictResult
+VerdictResult = AnalysisResult
 
 
 @dataclass
 class VerdictEvent:
-    """
-    A verdict received from the analysis engine.
+    """A complete analysis result arriving for policy evaluation.
 
-    Now carries sender and recipients for policy engine matching.
+    This is deserialized from the Redis queue and contains everything
+    the policy engine needs to make a decision.
     """
+
     message_id: str = ""
     user_id: str = ""
     tenant_id: str = ""
     tenant_alias: str = ""
     sender: str = ""
-    recipients: list = field(default_factory=list)  # list[str]
-    results: list = field(default_factory=list)      # list[VerdictResult]
+    recipients: list = field(default_factory=list)
+    results: list = field(default_factory=list)  # list[VerdictResult]
 
     @classmethod
     def from_dict(cls, data: dict) -> "VerdictEvent":
-        """Deserialise from the queue JSON."""
         return cls(
             message_id=data.get("message_id", ""),
             user_id=data.get("user_id", ""),
@@ -84,13 +54,7 @@ class VerdictEvent:
             sender=data.get("sender", ""),
             recipients=data.get("recipients", []),
             results=[
-                VerdictResult(
-                    analyzer=r.get("analyzer", ""),
-                    observations=[
-                        Observation.from_dict(o)
-                        for o in r.get("observations", [])
-                    ],
-                )
+                VerdictResult.from_dict(r)
                 for r in data.get("results", [])
             ],
         )

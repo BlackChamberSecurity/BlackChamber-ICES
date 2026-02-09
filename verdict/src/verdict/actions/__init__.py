@@ -45,6 +45,6 @@ def discover_actions() -> dict[str, BaseAction]:
         for attr_name, attr_value in inspect.getmembers(module, inspect.isclass):
             if issubclass(attr_value, BaseAction) and attr_value is not BaseAction:
                 instance = attr_value()
-                actions[instance.name] = instance
+                actions[instance.action_name] = instance
 
     return actions

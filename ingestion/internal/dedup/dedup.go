@@ -31,7 +31,7 @@ const (
 	DefaultTTL = 24 * time.Hour
 
 	// keyPrefix namespaces dedup keys in Redis.
-	keyPrefix = "bcem:seen:"
+	keyPrefix = "ices:seen:"
 )
 
 // Filter tracks which event IDs have already been processed.

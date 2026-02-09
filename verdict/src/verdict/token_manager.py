@@ -13,125 +13,170 @@
 # limitations under the License.
 
 """
-BCEM Verdict Worker — Token Manager
+BlackChamber ICES — Multi-Tenant OAuth2 Token Manager
 
-Thread-safe OAuth2 token manager using the client credentials flow.
-Replaces the static M365_ACCESS_TOKEN env var with automatic token
-acquisition and refresh.
+Acquires and caches OAuth2 access tokens per tenant using the client
+credentials flow. Supports both multi-tenant (config.yaml) and
+single-tenant (env var fallback) configurations.
 
-Tokens are cached and refreshed 5 minutes before expiry to avoid
-requests failing due to token expiration mid-batch.
+Thread-safe: uses a lock per tenant to prevent thundering-herd issues
+when multiple Celery threads need tokens simultaneously.
 """
+
 import logging
 import os
 import threading
 import time
+from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-# Buffer before token expiry to trigger refresh (seconds)
+# How many seconds before expiry to proactively refresh
 REFRESH_BUFFER_SECONDS = 300  # 5 minutes
 
 
+@dataclass
+class _CachedToken:
+    """Internal cache entry for a single tenant's token."""
+    access_token: str = ""
+    expires_at: float = 0.0  # Unix timestamp
+
+    @property
+    def is_valid(self) -> bool:
+        return self.access_token and time.time() < (self.expires_at - REFRESH_BUFFER_SECONDS)
+
+
+@dataclass
+class TenantCredentials:
+    """Credentials for a single M365 tenant."""
+    tenant_id: str
+    client_id: str
+    client_secret: str
+
+
 class TokenManager:
-    """
-    Acquires and caches an OAuth2 access token using the client credentials flow.
+    """Multi-tenant OAuth2 token manager using client credentials flow.
 
     Usage:
+        # Multi-tenant (from config.yaml):
+        manager = TokenManager(tenants={
+            "tenant-id-1": TenantCredentials("tenant-id-1", "client-1", "secret-1"),
+            "tenant-id-2": TenantCredentials("tenant-id-2", "client-2", "secret-2"),
+        })
+        token = manager.get_token("tenant-id-1")
+
+        # Single-tenant (env var fallback):
         manager = TokenManager()
-        token = manager.get_token()   # Always returns a valid token
+        token = manager.get_token()  # Uses M365_TENANT_ID env var
     """
 
-    def __init__(
-        self,
-        tenant_id: str = "",
-        client_id: str = "",
-        client_secret: str = "",
-    ):
-        self.tenant_id = tenant_id or os.environ.get("M365_TENANT_ID", "")
-        self.client_id = client_id or os.environ.get("M365_CLIENT_ID", "")
-        self.client_secret = client_secret or os.environ.get("M365_CLIENT_SECRET", "")
+    def __init__(self, tenants: Optional[dict[str, TenantCredentials]] = None):
+        self._tenants: dict[str, TenantCredentials] = tenants or {}
+        self._tokens: dict[str, _CachedToken] = {}
+        self._locks: dict[str, threading.Lock] = {}
+        self._global_lock = threading.Lock()
 
-        self.token_url = (
-            f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token"
-        )
-
-        self._token: str = ""
-        self._expires_at: float = 0.0
-        self._lock = threading.Lock()
-
-    def get_token(self) -> str:
-        """
-        Return a valid access token, refreshing if needed.
-
-        Thread-safe: multiple Celery worker threads can call this safely.
-        """
-        if self._is_valid():
-            return self._token
-
-        with self._lock:
-            # Double-check after acquiring lock
-            if self._is_valid():
-                return self._token
-
-            self._refresh()
-            return self._token
-
-    def _is_valid(self) -> bool:
-        """Check if the cached token is still valid (with buffer)."""
-        return (
-            self._token != ""
-            and time.time() < (self._expires_at - REFRESH_BUFFER_SECONDS)
-        )
-
-    def _refresh(self) -> None:
-        """Acquire a new token from Azure AD."""
-        if not all([self.tenant_id, self.client_id, self.client_secret]):
-            logger.warning(
-                "Token manager: missing credentials "
-                "(M365_TENANT_ID, M365_CLIENT_ID, M365_CLIENT_SECRET). "
-                "Batch actions will fail."
+        # Single-tenant fallback from environment variables
+        env_tenant = os.environ.get("M365_TENANT_ID", "")
+        env_client = os.environ.get("M365_CLIENT_ID", "")
+        env_secret = os.environ.get("M365_CLIENT_SECRET", "")
+        if env_tenant and env_client and env_secret and env_tenant not in self._tenants:
+            self._tenants[env_tenant] = TenantCredentials(
+                tenant_id=env_tenant,
+                client_id=env_client,
+                client_secret=env_secret,
             )
-            return
+            logger.info("TokenManager: loaded fallback credentials from env for tenant %s", env_tenant)
+
+        logger.info("TokenManager initialised with %d tenant(s)", len(self._tenants))
+
+    def _get_lock(self, tenant_id: str) -> threading.Lock:
+        """Get or create a per-tenant lock."""
+        if tenant_id not in self._locks:
+            with self._global_lock:
+                if tenant_id not in self._locks:
+                    self._locks[tenant_id] = threading.Lock()
+        return self._locks[tenant_id]
+
+    def get_token(self, tenant_id: Optional[str] = None) -> str:
+        """Get a valid access token for the given tenant.
+
+        If tenant_id is None, uses the first (or only) configured tenant.
+        Tokens are cached and refreshed automatically before expiry.
+
+        Args:
+            tenant_id: The M365 tenant ID to get a token for.
+
+        Returns:
+            A valid access token string.
+
+        Raises:
+            ValueError: If the tenant is not configured.
+            RuntimeError: If token acquisition fails.
+        """
+        # Default to first tenant if not specified
+        if tenant_id is None:
+            if not self._tenants:
+                raise ValueError("No tenants configured — set M365_TENANT_ID env var or pass tenants dict")
+            tenant_id = next(iter(self._tenants))
+
+        if tenant_id not in self._tenants:
+            raise ValueError(f"No credentials configured for tenant: {tenant_id}")
+
+        # Check cache
+        cached = self._tokens.get(tenant_id)
+        if cached and cached.is_valid:
+            return cached.access_token
+
+        # Acquire per-tenant lock and refresh
+        lock = self._get_lock(tenant_id)
+        with lock:
+            # Double-check after acquiring lock
+            cached = self._tokens.get(tenant_id)
+            if cached and cached.is_valid:
+                return cached.access_token
+
+            return self._refresh_token(tenant_id)
+
+    def _refresh_token(self, tenant_id: str) -> str:
+        """Acquire a fresh token from Azure AD."""
+        creds = self._tenants[tenant_id]
+        url = f"https://login.microsoftonline.com/{creds.tenant_id}/oauth2/v2.0/token"
 
         try:
-            response = httpx.post(
-                self.token_url,
-                data={
+            with httpx.Client(timeout=30) as client:
+                resp = client.post(url, data={
                     "grant_type": "client_credentials",
-                    "client_id": self.client_id,
-                    "client_secret": self.client_secret,
+                    "client_id": creds.client_id,
+                    "client_secret": creds.client_secret,
                     "scope": "https://graph.microsoft.com/.default",
-                },
-                timeout=10.0,
-            )
-            response.raise_for_status()
+                })
+                resp.raise_for_status()
 
-            data = response.json()
-            self._token = data["access_token"]
-            # expires_in is in seconds from now
+            data = resp.json()
+            access_token = data["access_token"]
             expires_in = int(data.get("expires_in", 3600))
-            self._expires_at = time.time() + expires_in
+
+            self._tokens[tenant_id] = _CachedToken(
+                access_token=access_token,
+                expires_at=time.time() + expires_in,
+            )
 
             logger.info(
-                "Token refreshed: expires_in=%ds, refresh_at=%ds",
-                expires_in,
-                expires_in - REFRESH_BUFFER_SECONDS,
+                "Token refreshed for tenant %s (expires in %ds)",
+                tenant_id, expires_in,
             )
+            return access_token
 
-        except httpx.HTTPError as exc:
-            logger.error("Token refresh failed: %s", exc)
-            # Keep existing token if it hasn't fully expired yet
-            if self._token and time.time() < self._expires_at:
-                logger.warning("Using existing token (still valid for %ds)",
-                               int(self._expires_at - time.time()))
-            else:
-                self._token = ""
-                self._expires_at = 0.0
-
-        except (KeyError, ValueError) as exc:
-            logger.error("Token response parsing failed: %s", exc)
-            self._token = ""
-            self._expires_at = 0.0
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                f"Token acquisition failed for tenant {tenant_id}: "
+                f"HTTP {exc.response.status_code} — {exc.response.text}"
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                f"Token acquisition failed for tenant {tenant_id}: {exc}"
+            ) from exc

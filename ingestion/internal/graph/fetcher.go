@@ -43,7 +43,7 @@ func NewFetcher(httpClient *http.Client, graphBaseURL string) *Fetcher {
 // Returns an EmailEvent ready for enqueuing to the analysis pipeline.
 func (f *Fetcher) FetchMessage(ctx context.Context, userID, messageID, tenantID, tenantAlias string) (*models.EmailEvent, error) {
 	// Build Graph API URL — select only the fields we need
-	url := fmt.Sprintf("%s/users/%s/messages/%s?$select=id,subject,from,body,internetMessageHeaders,hasAttachments",
+	url := fmt.Sprintf("%s/users/%s/messages/%s?$select=id,subject,from,toRecipients,body,internetMessageHeaders,hasAttachments",
 		f.graphBaseURL, userID, messageID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

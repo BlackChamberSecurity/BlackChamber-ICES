@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-BCEM Verdict Dispatcher
+BlackChamber ICES Verdict Worker — Dispatcher
 
 Routes verdicts to actions based on policy engine decisions.
 """
@@ -21,9 +21,10 @@ import logging
 import uuid
 from typing import Optional
 
+from verdict.actions import discover_actions
+from verdict.actions._base import BaseAction
 from verdict.models import VerdictEvent
 from verdict.policy_engine import PolicyEngine, PolicyDecision
-from verdict.actions._base import BaseAction
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class Dispatcher:
 
     def __init__(self, policy_engine: PolicyEngine):
         self.policy_engine = policy_engine
-        self.actions = self._discover_actions()
+        self.actions: dict[str, BaseAction] = discover_actions()
         logger.info(
             "Dispatcher ready: %d action(s), %d policy rule(s)",
             len(self.actions), len(policy_engine.policies),
@@ -78,26 +79,3 @@ class Dispatcher:
                 "matched_observations": decision.matched_observations,
             },
         }
-
-    def _discover_actions(self) -> dict[str, BaseAction]:
-        """Auto-discover action classes."""
-        import importlib
-        import inspect
-        import pkgutil
-        from pathlib import Path
-        from verdict.actions._base import BaseAction
-
-        actions = {}
-        pkg_dir = Path(__file__).parent / "actions"
-
-        for _, module_name, _ in pkgutil.iter_modules([str(pkg_dir)]):
-            if module_name.startswith("_"):
-                continue
-            module = importlib.import_module(f"verdict.actions.{module_name}")
-            for _, cls in inspect.getmembers(module, inspect.isclass):
-                if issubclass(cls, BaseAction) and cls is not BaseAction:
-                    instance = cls()
-                    actions[instance.action_name] = instance
-
-        logger.info("Discovered actions: %s", list(actions.keys()))
-        return actions

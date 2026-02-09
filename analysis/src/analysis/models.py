@@ -20,7 +20,9 @@ AnalysisResult = all observations from one analyzer for one email.
 Verdict = collection of all analyzer results for one email.
 """
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
+
+from ices_shared.models import Observation, AnalysisResult
 
 
 @dataclass
@@ -46,34 +48,10 @@ class Attachment:
     content_bytes: str = ""      # Base64-encoded
 
 
+
 # ---------------------------------------------------------------------------
-# Observation model — flexible typed key-value pairs
+# Core models
 # ---------------------------------------------------------------------------
-
-@dataclass
-class Observation:
-    """A single fact produced by an analyzer.
-
-    Types:
-        numeric   — integer or float value (e.g. risk_score=75)
-        pass_fail — "pass" or "fail" (e.g. spf=fail)
-        boolean   — True or False (e.g. sender_mismatch=True)
-        text      — free-form string (e.g. provider=Dropbox)
-    """
-    key: str
-    value: Any
-    type: str = "text"    # "numeric", "pass_fail", "boolean", "text"
-
-    def to_dict(self) -> dict:
-        return {"key": self.key, "value": self.value, "type": self.type}
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "Observation":
-        return cls(
-            key=data.get("key", ""),
-            value=data.get("value", ""),
-            type=data.get("type", "text"),
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -131,43 +109,6 @@ class EmailEvent:
             ),
             headers=data.get("headers", {}),
             attachments=[Attachment(**a) for a in attachments_data],
-        )
-
-
-@dataclass
-class AnalysisResult:
-    """All observations from a single analyzer for one email.
-
-    No fixed score or findings — analyzers return typed observations.
-    """
-    analyzer: str = ""
-    observations: list = field(default_factory=list)  # list[Observation]
-
-    def to_dict(self) -> dict:
-        return {
-            "analyzer": self.analyzer,
-            "observations": [o.to_dict() for o in self.observations],
-        }
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Get the value of an observation by key."""
-        for obs in self.observations:
-            if obs.key == key:
-                return obs.value
-        return default
-
-    def get_all(self, key: str) -> list:
-        """Get all values for a given observation key."""
-        return [obs.value for obs in self.observations if obs.key == key]
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "AnalysisResult":
-        return cls(
-            analyzer=data.get("analyzer", ""),
-            observations=[
-                Observation.from_dict(o)
-                for o in data.get("observations", [])
-            ],
         )
 
 
