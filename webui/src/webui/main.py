@@ -30,7 +30,7 @@ from jose import JWTError
 from pydantic import BaseModel
 
 from webui.auth import authenticate, verify_token
-from webui.queries import get_message_trip, get_stats, list_messages
+from webui.queries import get_message_trip, get_saas_analytics, get_stats, list_messages
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,17 @@ async def api_message_detail(message_id: str, user: str = Depends(get_current_us
 @app.get("/api/stats")
 async def api_stats(user: str = Depends(get_current_user)):
     return get_stats()
+
+
+@app.get("/api/saas-analytics")
+async def api_saas_analytics(
+    days: int = 30,
+    tenant: str | None = None,
+    user: str | None = None,
+    provider: str | None = None,
+    authed: str = Depends(get_current_user),
+):
+    return get_saas_analytics(days=days, tenant=tenant, user=user, provider=provider)
 
 
 # ---------------------------------------------------------------------------

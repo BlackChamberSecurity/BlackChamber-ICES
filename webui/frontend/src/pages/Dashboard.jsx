@@ -48,7 +48,11 @@ export default function Dashboard() {
                     <span className="topbar-icon">◆</span>
                     <h1>BlackChamber ICES</h1>
                 </div>
-                <button className="btn-ghost" onClick={handleLogout}>Sign Out</button>
+                <div className="topbar-nav">
+                    <button className="btn-ghost btn-ghost-active">Dashboard</button>
+                    <button className="btn-ghost" onClick={() => navigate('/saas')}>SaaS Usage</button>
+                    <button className="btn-ghost" onClick={handleLogout}>Sign Out</button>
+                </div>
             </header>
 
             {stats && (

@@ -52,7 +52,7 @@ func (f *Fetcher) FetchMessage(ctx context.Context, userID, messageID, tenantID,
 	}
 
 	// Build Graph API URL — select only the fields we need
-	url := fmt.Sprintf("%s/users/%s/messages/%s?$select=id,subject,from,toRecipients,body,internetMessageHeaders,hasAttachments",
+	url := fmt.Sprintf("%s/users/%s/messages/%s?$select=id,subject,receivedDateTime,from,toRecipients,body,internetMessageHeaders,hasAttachments",
 		f.graphBaseURL, userID, messageID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

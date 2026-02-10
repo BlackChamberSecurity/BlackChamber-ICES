@@ -83,7 +83,9 @@ def run_pipeline(email: EmailEvent) -> Verdict:
         user_id=email.user_id,
         tenant_id=email.tenant_id,
         tenant_alias=email.tenant_alias,
+        received_at=email.received_at,
         sender=email.sender,
+        subject=email.subject,
         recipients=recipients,
         results=results,
     )

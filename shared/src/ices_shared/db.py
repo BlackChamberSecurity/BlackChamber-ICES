@@ -128,8 +128,8 @@ def store_email_event(conn, verdict_dict: dict) -> int:
     """Insert an email_events row and return the generated id."""
     cur = conn.execute(
         """
-        INSERT INTO email_events (message_id, user_id, tenant_id, tenant_alias, sender, recipients, subject)
-        VALUES (%(message_id)s, %(user_id)s, %(tenant_id)s, %(tenant_alias)s, %(sender)s, %(recipients)s, %(subject)s)
+        INSERT INTO email_events (message_id, user_id, tenant_id, tenant_alias, sender, recipients, subject, received_at)
+        VALUES (%(message_id)s, %(user_id)s, %(tenant_id)s, %(tenant_alias)s, %(sender)s, %(recipients)s, %(subject)s, %(received_at)s)
         RETURNING id
         """,
         {
@@ -140,6 +140,7 @@ def store_email_event(conn, verdict_dict: dict) -> int:
             "sender": verdict_dict.get("sender", ""),
             "recipients": json.dumps(verdict_dict.get("recipients", [])),
             "subject": verdict_dict.get("subject", ""),
+            "received_at": verdict_dict.get("received_at") or None,
         },
     )
     row = cur.fetchone()

@@ -967,4 +967,513 @@ body::after {
   .pipeline-connector {
     left: calc(0.75rem + 18px);
   }
+
+  .saas-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .saas-filters {
+    flex-direction: column;
+    padding: 0.75rem;
+  }
+}
+
+/* ----------------------------------------------------------------
+   Topbar navigation
+   ---------------------------------------------------------------- */
+.topbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.btn-ghost-active {
+  color: var(--accent) !important;
+  border-color: var(--accent) !important;
+  text-shadow: 0 0 6px var(--accent-glow);
+}
+
+/* ----------------------------------------------------------------
+   SaaS page — Filters
+   ---------------------------------------------------------------- */
+.saas-filters {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 1rem 1.5rem 0.25rem;
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.filter-label {
+  font-size: 0.5625rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+}
+
+.filter-buttons {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.filter-btn {
+  padding: 0.2rem 0.5rem;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.filter-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.filter-btn-active {
+  background: var(--accent);
+  color: var(--text-inverse);
+  border-color: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+/* ----------------------------------------------------------------
+   SaaS page — Grid layout
+   ---------------------------------------------------------------- */
+.saas-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  padding: 0 1.5rem 0.75rem;
+}
+
+.saas-chart-card {
+  margin: 0;
+}
+
+/* ----------------------------------------------------------------
+   SaaS page — Horizontal bar chart
+   ---------------------------------------------------------------- */
+@keyframes bar-grow {
+  from {
+    width: 0;
+  }
+}
+
+.bar-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 120px 1fr 40px;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.bar-label {
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: capitalize;
+}
+
+.bar-track {
+  height: 16px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-input);
+}
+
+.bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), rgba(204, 0, 0, 0.7));
+  border-radius: var(--radius);
+  animation: bar-grow 600ms ease-out both;
+  position: relative;
+}
+
+.bar-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 2px;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.bar-value {
+  font-size: 0.75rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--text-primary);
+  text-align: right;
+  letter-spacing: 0.5px;
+}
+
+/* ----------------------------------------------------------------
+   SaaS page — Donut chart (SVG)
+   ---------------------------------------------------------------- */
+.donut-container {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.donut-svg {
+  width: 140px;
+  height: 140px;
+  flex-shrink: 0;
+  transform: rotate(-90deg);
+}
+
+@keyframes donut-draw {
+  from {
+    stroke-dasharray: 0 283;
+  }
+}
+
+.donut-segment {
+  animation: donut-draw 800ms ease-out both;
+}
+
+.donut-center-value {
+  font-family: var(--font-display);
+  font-size: 24px;
+  fill: var(--text-primary);
+  transform: rotate(90deg);
+  transform-origin: 60px 60px;
+}
+
+.donut-center-label {
+  font-family: var(--font);
+  font-size: 6px;
+  font-weight: 600;
+  fill: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  transform: rotate(90deg);
+  transform-origin: 60px 60px;
+}
+
+.donut-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  flex: 1;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+
+.legend-label {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  text-transform: capitalize;
+  flex: 1;
+}
+
+.legend-value {
+  font-family: var(--font-display);
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  letter-spacing: 0.5px;
+}
+
+/* ----------------------------------------------------------------
+   SaaS page — Usage / Marketing split bar
+   ---------------------------------------------------------------- */
+.usage-split {
+  padding: 0.75rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-input);
+}
+
+.split-header {
+  margin-bottom: 0.4rem;
+}
+
+.split-bar-track {
+  height: 10px;
+  background: rgba(204, 0, 0, 0.12);
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid rgba(204, 0, 0, 0.15);
+}
+
+.split-bar-usage {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-success), rgba(26, 138, 26, 0.7));
+  border-radius: var(--radius);
+  transition: width 600ms ease-out;
+}
+
+.split-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.35rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.split-label-usage {
+  color: var(--color-success);
+}
+
+.split-label-marketing {
+  color: var(--accent);
+}
+
+/* ----------------------------------------------------------------
+   SaaS page — Timeline chart (SVG bars)
+   ---------------------------------------------------------------- */
+.timeline-chart {
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+  position: relative;
+}
+
+.timeline-svg {
+  width: 100%;
+  height: 140px;
+  display: block;
+}
+
+@keyframes timeline-grow {
+  from {
+    transform: scaleY(0);
+    transform-origin: bottom;
+  }
+
+  to {
+    transform: scaleY(1);
+    transform-origin: bottom;
+  }
+}
+
+.timeline-bar {
+  fill: var(--accent);
+  opacity: 0.75;
+  animation: timeline-grow 500ms ease-out both;
+  transition: opacity var(--transition);
+}
+
+.timeline-bar:hover {
+  opacity: 1;
+  filter: drop-shadow(0 0 4px var(--accent-glow));
+}
+
+.timeline-labels {
+  position: relative;
+  height: 18px;
+  margin-top: 0.25rem;
+}
+
+.timeline-date-label {
+  position: absolute;
+  transform: translateX(-50%);
+  font-family: var(--font);
+  font-size: 0.5625rem;
+  color: var(--text-muted);
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+/* ----------------------------------------------------------------
+   SaaS page — Provider table share bar
+   ---------------------------------------------------------------- */
+.provider-name {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.share-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  height: 14px;
+}
+
+.share-fill {
+  height: 100%;
+  min-width: 2px;
+  background: linear-gradient(90deg, var(--accent), rgba(204, 0, 0, 0.5));
+  border-radius: var(--radius);
+}
+
+.share-text {
+  font-size: 0.6875rem;
+  font-family: var(--font-display);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  letter-spacing: 0.5px;
+}
+
+/* ----------------------------------------------------------------
+   SaaS page — Filter select dropdown
+   ---------------------------------------------------------------- */
+.filter-select {
+  padding: 0.2rem 0.5rem;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%23999' d='M0 0l4 5 4-5z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.4rem center;
+  padding-right: 1.2rem;
+  min-width: 100px;
+}
+
+.filter-select:hover {
+  border-color: var(--accent);
+}
+
+.filter-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 4px var(--accent-glow);
+}
+
+/* ----------------------------------------------------------------
+   SaaS page — Expandable provider users
+   ---------------------------------------------------------------- */
+.bar-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.bar-row-clickable {
+  cursor: pointer;
+}
+
+.bar-row-clickable:hover .bar-label {
+  color: var(--accent);
+}
+
+.bar-expand {
+  display: inline-block;
+  width: 12px;
+  font-size: 0.625rem;
+  color: var(--text-muted);
+}
+
+.bar-users {
+  margin: 0.15rem 0 0.35rem 0;
+  padding: 0.35rem 0.5rem;
+  margin-left: 120px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-input);
+}
+
+.bar-user-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.15rem 0;
+  font-size: 0.6875rem;
+}
+
+.bar-user-row+.bar-user-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.bar-user-id {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.bar-user-count {
+  font-family: var(--font-display);
+  color: var(--text-muted);
+  font-size: 0.625rem;
+  letter-spacing: 0.3px;
+}
+
+/* ----------------------------------------------------------------
+   SaaS page — User chips in provider table
+   ---------------------------------------------------------------- */
+.provider-users-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.user-chip {
+  display: inline-block;
+  padding: 0.1rem 0.35rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+
+.user-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 4px var(--accent-glow);
+}
+
+.user-chip-more {
+  background: transparent;
+  border-style: dashed;
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.user-chip-more:hover {
+  border-color: var(--border);
+  color: var(--text-muted);
+  box-shadow: none;
 }

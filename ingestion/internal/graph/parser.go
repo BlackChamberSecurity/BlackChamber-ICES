@@ -25,9 +25,10 @@ import (
 
 // graphMessage represents the relevant fields from a Graph API message response.
 type graphMessage struct {
-	ID      string `json:"id"`
-	Subject string `json:"subject"`
-	From    struct {
+	ID               string `json:"id"`
+	Subject          string `json:"subject"`
+	ReceivedDateTime string `json:"receivedDateTime"`
+	From             struct {
 		EmailAddress struct {
 			Address string `json:"address"`
 			Name    string `json:"name"`
@@ -76,7 +77,7 @@ func parseGraphMessage(body io.Reader, userID, tenantID, tenantAlias string) (*m
 		UserID:      userID,
 		TenantID:    tenantID,
 		TenantAlias: tenantAlias,
-		ReceivedAt:  time.Now().UTC().Format(time.RFC3339),
+		ReceivedAt:  resolveReceivedAt(msg.ReceivedDateTime),
 		From: models.EmailAddress{
 			Address: msg.From.EmailAddress.Address,
 			Name:    msg.From.EmailAddress.Name,
@@ -92,4 +93,19 @@ func parseGraphMessage(body io.Reader, userID, tenantID, tenantAlias string) (*m
 	}
 
 	return event, nil
+}
+
+// resolveReceivedAt parses the Graph API receivedDateTime field.
+// Falls back to current time if the field is empty or unparseable.
+func resolveReceivedAt(graphTimestamp string) string {
+	if graphTimestamp == "" {
+		return time.Now().UTC().Format(time.RFC3339)
+	}
+	// Graph API uses ISO 8601 format, e.g. "2026-01-15T10:30:00Z"
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05Z", "2006-01-02T15:04:05"} {
+		if t, err := time.Parse(layout, graphTimestamp); err == nil {
+			return t.UTC().Format(time.RFC3339)
+		}
+	}
+	return time.Now().UTC().Format(time.RFC3339)
 }

@@ -140,7 +140,9 @@ class Verdict:
     user_id: str = ""
     tenant_id: str = ""
     tenant_alias: str = ""
+    received_at: str = ""
     sender: str = ""
+    subject: str = ""
     recipients: list = field(default_factory=list)  # list[str]
     results: list = field(default_factory=list)      # list[AnalysisResult]
 
@@ -150,7 +152,9 @@ class Verdict:
             "user_id": self.user_id,
             "tenant_id": self.tenant_id,
             "tenant_alias": self.tenant_alias,
+            "received_at": self.received_at,
             "sender": self.sender,
+            "subject": self.subject,
             "recipients": self.recipients,
             "results": [r.to_dict() for r in self.results],
         }
@@ -162,7 +166,9 @@ class Verdict:
             user_id=data.get("user_id", ""),
             tenant_id=data.get("tenant_id", ""),
             tenant_alias=data.get("tenant_alias", ""),
+            received_at=data.get("received_at", ""),
             sender=data.get("sender", ""),
+            subject=data.get("subject", ""),
             recipients=data.get("recipients", []),
             results=[
                 AnalysisResult.from_dict(r)

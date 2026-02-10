@@ -146,6 +146,209 @@ def get_stats() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# SaaS analytics
+# ---------------------------------------------------------------------------
+
+def get_saas_analytics(
+    days: int = 30,
+    tenant: str | None = None,
+    user: str | None = None,
+    provider: str | None = None,
+) -> dict:
+    """Return aggregated SaaS usage analytics from analysis results."""
+    where_parts = [
+        "ar.analyzer = 'saas_usage'",
+        "COALESCE(e.received_at, e.created_at) >= NOW() - make_interval(days => %(days)s)",
+    ]
+    params: dict = {"days": days}
+
+    if tenant:
+        where_parts.append("e.tenant_alias = %(tenant)s")
+        params["tenant"] = tenant
+
+    if user:
+        where_parts.append("e.user_id = %(user_filter)s")
+        params["user_filter"] = user
+
+    # Optional provider filter — applied as an extra predicate on provider obs
+    prov_filter_sql = ""
+    if provider:
+        prov_filter_sql = "AND obs_pf->>'value' = %(provider_filter)s"
+        params["provider_filter"] = provider
+
+    where = " AND ".join(where_parts)
+
+    # When provider filter is set, we need an additional JOIN to restrict rows
+    provider_join = ""
+    if provider:
+        provider_join = f"""
+            JOIN LATERAL (
+                SELECT val FROM jsonb_array_elements(ar.observations) AS val
+                WHERE val->>'key' = 'provider'
+                  AND val->>'value' = %(provider_filter)s
+                LIMIT 1
+            ) obs_pf ON TRUE
+        """
+
+    with get_connection() as conn:
+        # --- Provider breakdown (top 20) ---
+        providers = conn.execute(f"""
+            SELECT
+                obs->>'value' AS provider,
+                COUNT(*) AS count
+            FROM analysis_results ar
+            JOIN email_events e ON e.id = ar.email_event_id
+            {provider_join}
+            , LATERAL jsonb_array_elements(ar.observations) AS obs
+            WHERE {where}
+              AND obs->>'key' = 'provider'
+              AND obs->>'value' IS NOT NULL
+            GROUP BY obs->>'value'
+            ORDER BY count DESC
+            LIMIT 20
+        """, params).fetchall()
+
+        # --- Category breakdown ---
+        categories = conn.execute(f"""
+            SELECT
+                obs->>'value' AS category,
+                COUNT(*) AS count
+            FROM analysis_results ar
+            JOIN email_events e ON e.id = ar.email_event_id
+            {provider_join}
+            , LATERAL jsonb_array_elements(ar.observations) AS obs
+            WHERE {where}
+              AND obs->>'key' = 'category'
+              AND obs->>'value' IS NOT NULL
+            GROUP BY obs->>'value'
+            ORDER BY count DESC
+        """, params).fetchall()
+
+        # --- Usage vs Marketing split ---
+        classification = conn.execute(f"""
+            SELECT
+                obs->>'value' AS category,
+                COUNT(*) AS count
+            FROM analysis_results ar
+            JOIN email_events e ON e.id = ar.email_event_id
+            {provider_join}
+            , LATERAL jsonb_array_elements(ar.observations) AS obs
+            WHERE {where}
+              AND obs->>'key' = 'category'
+              AND obs->>'value' IS NOT NULL
+            GROUP BY obs->>'value'
+        """, params).fetchall()
+
+        # --- Daily timeline ---
+        timeline = conn.execute(f"""
+            SELECT
+                DATE(COALESCE(e.received_at, e.created_at)) AS day,
+                COUNT(*) AS count
+            FROM analysis_results ar
+            JOIN email_events e ON e.id = ar.email_event_id
+            {provider_join}
+            WHERE {where}
+            GROUP BY DATE(COALESCE(e.received_at, e.created_at))
+            ORDER BY day
+        """, params).fetchall()
+
+        # --- Provider → Users mapping (top 20 providers, up to 10 users each) ---
+        provider_users = conn.execute(f"""
+            SELECT
+                obs->>'value' AS provider,
+                e.user_id,
+                COUNT(*) AS count
+            FROM analysis_results ar
+            JOIN email_events e ON e.id = ar.email_event_id
+            {provider_join}
+            , LATERAL jsonb_array_elements(ar.observations) AS obs
+            WHERE {where}
+              AND obs->>'key' = 'provider'
+              AND obs->>'value' IS NOT NULL
+            GROUP BY obs->>'value', e.user_id
+            ORDER BY obs->>'value', count DESC
+        """, params).fetchall()
+
+        # --- Distinct users list ---
+        users_rows = conn.execute(f"""
+            SELECT DISTINCT e.user_id
+            FROM analysis_results ar
+            JOIN email_events e ON e.id = ar.email_event_id
+            {provider_join}
+            WHERE {where}
+            ORDER BY e.user_id
+        """, params).fetchall()
+
+        # --- Totals ---
+        totals = conn.execute(f"""
+            SELECT
+                COUNT(*) AS total_saas_emails,
+                (SELECT COUNT(DISTINCT obs->>'value')
+                 FROM analysis_results ar2
+                 JOIN email_events e2 ON e2.id = ar2.email_event_id,
+                 LATERAL jsonb_array_elements(ar2.observations) AS obs
+                 WHERE ar2.analyzer = 'saas_usage'
+                   AND ar2.created_at >= NOW() - make_interval(days => %(days)s)
+                   AND obs->>'key' = 'provider'
+                   {"AND e2.tenant_alias = %(tenant)s" if tenant else ""}
+                   {"AND e2.user_id = %(user_filter)s" if user else ""}
+                ) AS unique_providers,
+                (SELECT COUNT(DISTINCT obs->>'value')
+                 FROM analysis_results ar3
+                 JOIN email_events e3 ON e3.id = ar3.email_event_id,
+                 LATERAL jsonb_array_elements(ar3.observations) AS obs
+                 WHERE ar3.analyzer = 'saas_usage'
+                   AND ar3.created_at >= NOW() - make_interval(days => %(days)s)
+                   AND obs->>'key' = 'category'
+                   {"AND e3.tenant_alias = %(tenant)s" if tenant else ""}
+                   {"AND e3.user_id = %(user_filter)s" if user else ""}
+                ) AS unique_categories,
+                COUNT(DISTINCT e.user_id) AS unique_users
+            FROM analysis_results ar
+            JOIN email_events e ON e.id = ar.email_event_id
+            {provider_join}
+            WHERE {where}
+        """, params).fetchone()
+
+    # Compute usage percentage
+    usage_count = sum(r["count"] for r in classification if r["category"] == "usage")
+    marketing_count = sum(r["count"] for r in classification if r["category"] == "marketing")
+    total_classified = usage_count + marketing_count
+
+    # Group users by provider
+    provider_users_map: dict[str, list] = {}
+    for row in provider_users:
+        prov = row["provider"]
+        if prov not in provider_users_map:
+            provider_users_map[prov] = []
+        provider_users_map[prov].append({
+            "user_id": row["user_id"],
+            "count": row["count"],
+        })
+
+    return {
+        "providers": [_serialize_row(r) for r in providers],
+        "categories": [_serialize_row(r) for r in categories],
+        "classification": {
+            "usage": usage_count,
+            "marketing": marketing_count,
+            "usage_pct": round(usage_count / total_classified * 100) if total_classified else 0,
+        },
+        "timeline": [_serialize_row(r) for r in timeline],
+        "provider_users": provider_users_map,
+        "users": [r["user_id"] for r in users_rows],
+        "totals": _serialize_row(totals) if totals else {
+            "total_saas_emails": 0,
+            "unique_providers": 0,
+            "unique_categories": 0,
+            "unique_users": 0,
+        },
+        "days": days,
+    }
+
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -160,3 +363,4 @@ def _serialize_row(row: dict) -> dict:
         else:
             out[k] = v
     return out
+
