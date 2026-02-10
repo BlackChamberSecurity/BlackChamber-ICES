@@ -87,3 +87,19 @@ policies:
 
   # SaaS usage has no security policy — informational only.
   # All observations are persisted to Postgres for reporting.
+
+  - name: quarantine-bec-fraud
+    tenant: "*"
+    when:
+      analyzer: bec_analyzer
+      observation: bec_confidence
+      gte: 80
+    action: quarantine
+
+  - name: tag-new-sender
+    tenant: "*"
+    when:
+      analyzer: bec_analyzer
+      observation: is_new_sender
+      equals: true
+    action: tag
