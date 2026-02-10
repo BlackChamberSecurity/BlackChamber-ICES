@@ -1,6 +1,12 @@
-# BlackChamber ICES
+<p align="center">
+  <img src="photos/BLACKCHAMBER.png" alt="BlackChamber ICES" width="480" />
+</p>
 
 **Integrated Cloud Email Security** — an open-source email security platform that connects to Microsoft 365 mailboxes, analyzes incoming messages in real time, and enforces configurable security policies.
+
+<p align="center">
+  <img src="photos/ss-saas.png" alt="SaaS Usage Dashboard" width="720" />
+</p>
 
 ## Architecture
 
