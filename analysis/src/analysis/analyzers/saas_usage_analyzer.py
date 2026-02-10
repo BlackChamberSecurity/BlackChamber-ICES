@@ -46,6 +46,7 @@ from pathlib import Path
 
 from analysis.analyzers._base import BaseAnalyzer
 from analysis.models import AnalysisResult, EmailEvent, Observation
+from analysis.nlp import get_nlp_classifier
 
 logger = logging.getLogger(__name__)
 
@@ -115,28 +116,6 @@ def _load_vendor_data():
     return _VENDOR_DATA
 
 
-# ---------------------------------------------------------------------------
-# NLP classifier — lazy-loaded once per worker
-# ---------------------------------------------------------------------------
-_nlp_classifier = None
-
-
-def _get_nlp_classifier():
-    global _nlp_classifier
-    if _nlp_classifier is None:
-        try:
-            from transformers import pipeline
-            logger.info("Loading zero-shot classification model...")
-            _nlp_classifier = pipeline(
-                "zero-shot-classification",
-                model="cross-encoder/nli-distilroberta-base",
-                device=-1,
-            )
-            logger.info("NLP model loaded successfully")
-        except Exception as exc:
-            logger.warning("Failed to load NLP model: %s. Falling back to headers only.", exc)
-            _nlp_classifier = False
-    return _nlp_classifier if _nlp_classifier is not False else None
 
 
 
@@ -290,7 +269,7 @@ class SaaSUsageAnalyzer(BaseAnalyzer):
 
     def _nlp_classify(self, email: EmailEvent) -> tuple[str, int]:
         """Classify a SaaS email as usage or marketing using zero-shot NLP."""
-        classifier = _get_nlp_classifier()
+        classifier = get_nlp_classifier()
         if classifier is None:
             return "unknown", 0
 
