@@ -61,6 +61,6 @@ def verify_token(token: str) -> dict:
 
 def authenticate(username: str, password: str) -> str | None:
     """Validate credentials and return a JWT, or None on failure."""
-    if username == ADMIN_USER and password == ADMIN_PASSWORD:
+    if secrets.compare_digest(username, ADMIN_USER) and secrets.compare_digest(password, ADMIN_PASSWORD):
         return create_token(username)
     return None
