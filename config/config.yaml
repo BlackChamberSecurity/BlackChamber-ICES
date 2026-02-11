@@ -93,10 +93,10 @@ policies:
       gte: 75
     action: quarantine
 
-  - name: quarantine-spamhaus-ip
+  - name: quarantine-reputation-ip
     tenant: "*"
     when:
-      analyzer: spamhaus
+      analyzer: reputation
       observation: ip_listed
       equals: true
     action: quarantine
