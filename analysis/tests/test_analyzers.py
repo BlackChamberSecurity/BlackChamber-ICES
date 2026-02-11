@@ -15,9 +15,9 @@
 """Tests for individual analyzers — observation model."""
 import pytest
 from analysis.models import EmailEvent, EmailBody, Attachment, Observation
-from analysis.analyzers.header_analyzer import HeaderAnalyzer
-from analysis.analyzers.url_analyzer import URLAnalyzer
-from analysis.analyzers.attachment_analyzer import AttachmentAnalyzer
+from analysis.analyzers.header.analyzer import HeaderAnalyzer
+from analysis.analyzers.url.analyzer import URLAnalyzer
+from analysis.analyzers.attachment.analyzer import AttachmentAnalyzer
 
 
 def _make_email(**kwargs) -> EmailEvent:
@@ -200,7 +200,7 @@ class TestSaaSUsageAnalyzer:
     """Tests for the refactored domain-first SaaS usage analyzer."""
 
     def setup_method(self):
-        from analysis.analyzers.saas_usage_analyzer import SaaSUsageAnalyzer
+        from analysis.analyzers.saas.analyzer import SaaSUsageAnalyzer
         self.analyzer = SaaSUsageAnalyzer()
 
     def test_known_vendor_sets_is_saas(self):

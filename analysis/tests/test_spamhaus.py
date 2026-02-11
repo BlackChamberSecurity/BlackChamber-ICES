@@ -18,7 +18,7 @@ import socket
 
 import pytest
 from analysis.models import EmailEvent, EmailBody, Observation
-from analysis.analyzers.spamhaus_analyzer import (
+from analysis.analyzers.spamhaus.analyzer import (
     SpamhausAnalyzer,
     _extract_sender_ip,
     _check_ip,
@@ -81,17 +81,17 @@ class TestExtractSenderIP:
 class TestDNSBLLookup:
     """Tests for raw DNSBL DNS queries."""
 
-    @patch("analysis.analyzers.spamhaus_analyzer.socket.gethostbyname")
+    @patch("analysis.analyzers.spamhaus.analyzer.socket.gethostbyname")
     def test_listed_returns_ip(self, mock_dns):
         mock_dns.return_value = "127.0.0.2"
         assert _dnsbl_lookup("2.0.0.127.zen.spamhaus.org") == "127.0.0.2"
 
-    @patch("analysis.analyzers.spamhaus_analyzer.socket.gethostbyname")
+    @patch("analysis.analyzers.spamhaus.analyzer.socket.gethostbyname")
     def test_not_listed_returns_none(self, mock_dns):
         mock_dns.side_effect = socket.gaierror("NXDOMAIN")
         assert _dnsbl_lookup("2.0.0.127.zen.spamhaus.org") is None
 
-    @patch("analysis.analyzers.spamhaus_analyzer.socket.gethostbyname")
+    @patch("analysis.analyzers.spamhaus.analyzer.socket.gethostbyname")
     def test_timeout_returns_none(self, mock_dns):
         mock_dns.side_effect = socket.timeout("timed out")
         assert _dnsbl_lookup("2.0.0.127.zen.spamhaus.org") is None
@@ -100,7 +100,7 @@ class TestDNSBLLookup:
 class TestCheckIP:
     """Tests for Spamhaus ZEN IP lookups."""
 
-    @patch("analysis.analyzers.spamhaus_analyzer._dnsbl_lookup")
+    @patch("analysis.analyzers.spamhaus.analyzer._dnsbl_lookup")
     def test_listed_sbl(self, mock_lookup):
         mock_lookup.return_value = "127.0.0.2"
         listed, label = _check_ip("1.2.3.4")
@@ -109,28 +109,28 @@ class TestCheckIP:
         # Verify reversed IP query
         mock_lookup.assert_called_once_with("4.3.2.1.zen.spamhaus.org")
 
-    @patch("analysis.analyzers.spamhaus_analyzer._dnsbl_lookup")
+    @patch("analysis.analyzers.spamhaus.analyzer._dnsbl_lookup")
     def test_listed_xbl(self, mock_lookup):
         mock_lookup.return_value = "127.0.0.4"
         listed, label = _check_ip("10.20.30.40")
         assert listed is True
         assert label == "XBL-CBL"
 
-    @patch("analysis.analyzers.spamhaus_analyzer._dnsbl_lookup")
+    @patch("analysis.analyzers.spamhaus.analyzer._dnsbl_lookup")
     def test_listed_pbl(self, mock_lookup):
         mock_lookup.return_value = "127.0.0.10"
         listed, label = _check_ip("5.6.7.8")
         assert listed is True
         assert label == "PBL"
 
-    @patch("analysis.analyzers.spamhaus_analyzer._dnsbl_lookup")
+    @patch("analysis.analyzers.spamhaus.analyzer._dnsbl_lookup")
     def test_not_listed(self, mock_lookup):
         mock_lookup.return_value = None
         listed, label = _check_ip("8.8.8.8")
         assert listed is False
         assert label == ""
 
-    @patch("analysis.analyzers.spamhaus_analyzer._dnsbl_lookup")
+    @patch("analysis.analyzers.spamhaus.analyzer._dnsbl_lookup")
     def test_unknown_code(self, mock_lookup):
         mock_lookup.return_value = "127.0.0.99"
         listed, label = _check_ip("1.1.1.1")
@@ -141,7 +141,7 @@ class TestCheckIP:
 class TestCheckDomain:
     """Tests for Spamhaus DBL domain lookups."""
 
-    @patch("analysis.analyzers.spamhaus_analyzer._dnsbl_lookup")
+    @patch("analysis.analyzers.spamhaus.analyzer._dnsbl_lookup")
     def test_spam_domain(self, mock_lookup):
         mock_lookup.return_value = "127.0.1.2"
         listed, category = _check_domain("spammy.example")
@@ -149,14 +149,14 @@ class TestCheckDomain:
         assert category == "spam-domain"
         mock_lookup.assert_called_once_with("spammy.example.dbl.spamhaus.org")
 
-    @patch("analysis.analyzers.spamhaus_analyzer._dnsbl_lookup")
+    @patch("analysis.analyzers.spamhaus.analyzer._dnsbl_lookup")
     def test_phish_domain(self, mock_lookup):
         mock_lookup.return_value = "127.0.1.4"
         listed, category = _check_domain("phish.example")
         assert listed is True
         assert category == "phish-domain"
 
-    @patch("analysis.analyzers.spamhaus_analyzer._dnsbl_lookup")
+    @patch("analysis.analyzers.spamhaus.analyzer._dnsbl_lookup")
     def test_clean_domain(self, mock_lookup):
         mock_lookup.return_value = None
         listed, category = _check_domain("clean.example")
@@ -176,8 +176,8 @@ class TestSpamhausAnalyzer:
     def test_name(self):
         assert self.analyzer.name == "spamhaus"
 
-    @patch("analysis.analyzers.spamhaus_analyzer._check_domain")
-    @patch("analysis.analyzers.spamhaus_analyzer._check_ip")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_domain")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_ip")
     def test_clean_email(self, mock_ip, mock_domain):
         mock_ip.return_value = (False, "")
         mock_domain.return_value = (False, "")
@@ -196,8 +196,8 @@ class TestSpamhausAnalyzer:
         assert result.get("ip_list") is None
         assert result.get("domain_list") is None
 
-    @patch("analysis.analyzers.spamhaus_analyzer._check_domain")
-    @patch("analysis.analyzers.spamhaus_analyzer._check_ip")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_domain")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_ip")
     def test_listed_ip_and_domain(self, mock_ip, mock_domain):
         mock_ip.return_value = (True, "SBL")
         mock_domain.return_value = (True, "spam-domain")
@@ -213,8 +213,8 @@ class TestSpamhausAnalyzer:
         assert result.get("domain_listed") is True
         assert result.get("domain_list") == "spam-domain"
 
-    @patch("analysis.analyzers.spamhaus_analyzer._check_domain")
-    @patch("analysis.analyzers.spamhaus_analyzer._check_ip")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_domain")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_ip")
     def test_no_ip_found(self, mock_ip, mock_domain):
         mock_domain.return_value = (False, "")
 
@@ -227,8 +227,8 @@ class TestSpamhausAnalyzer:
         assert result.get("sender_ip") == "not_found"
         mock_ip.assert_not_called()
 
-    @patch("analysis.analyzers.spamhaus_analyzer._check_domain")
-    @patch("analysis.analyzers.spamhaus_analyzer._check_ip")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_domain")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_ip")
     def test_no_sender_domain(self, mock_ip, mock_domain):
         mock_ip.return_value = (False, "")
 
@@ -241,8 +241,8 @@ class TestSpamhausAnalyzer:
         assert result.get("ip_listed") is False
         mock_domain.assert_not_called()
 
-    @patch("analysis.analyzers.spamhaus_analyzer._check_domain")
-    @patch("analysis.analyzers.spamhaus_analyzer._check_ip")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_domain")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_ip")
     def test_ip_lookup_error_produces_observation(self, mock_ip, mock_domain):
         mock_ip.side_effect = Exception("DNS failure")
         mock_domain.return_value = (False, "")
@@ -257,8 +257,8 @@ class TestSpamhausAnalyzer:
         assert err is not None
         assert "zen" in err
 
-    @patch("analysis.analyzers.spamhaus_analyzer._check_domain")
-    @patch("analysis.analyzers.spamhaus_analyzer._check_ip")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_domain")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_ip")
     def test_domain_lookup_error_produces_observation(self, mock_ip, mock_domain):
         mock_ip.return_value = (False, "")
         mock_domain.side_effect = Exception("DNS failure")
@@ -273,8 +273,8 @@ class TestSpamhausAnalyzer:
         assert err is not None
         assert "dbl" in err
 
-    @patch("analysis.analyzers.spamhaus_analyzer._check_domain")
-    @patch("analysis.analyzers.spamhaus_analyzer._check_ip")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_domain")
+    @patch("analysis.analyzers.spamhaus.analyzer._check_ip")
     def test_result_serialization(self, mock_ip, mock_domain):
         mock_ip.return_value = (True, "XBL-CBL")
         mock_domain.return_value = (False, "")

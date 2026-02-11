@@ -26,7 +26,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from analysis.analyzers.bec_models import SenderProfile, SenderRecipientPair
+from analysis.analyzers.bec.models import SenderProfile, SenderRecipientPair
 
 logger = logging.getLogger(__name__)
 

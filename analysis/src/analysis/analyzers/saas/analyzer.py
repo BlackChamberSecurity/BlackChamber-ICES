@@ -96,7 +96,7 @@ _VENDOR_DATA = None
 def _load_vendor_data():
     global _VENDOR_DATA
     if _VENDOR_DATA is None:
-        data_path = Path(__file__).parent.parent / "data" / "saas_vendors.json"
+        data_path = Path(__file__).parent.parent.parent / "data" / "saas_vendors.json"
         try:
             with open(data_path) as f:
                 _VENDOR_DATA = json.load(f)

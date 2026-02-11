@@ -83,7 +83,7 @@ def analyze_email(self, email_event_json: str):
 
         # --- Update BEC behavioral models (best-effort, non-fatal) ---
         try:
-            from analysis.analyzers.bec_analyzer import update_behavioral_profiles
+            from analysis.analyzers.bec.analyzer import update_behavioral_profiles
             update_behavioral_profiles(email, verdict)
         except Exception as bec_exc:
             logger.warning("BEC profile update failed (non-fatal): %s", bec_exc)

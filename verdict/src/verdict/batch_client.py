@@ -61,6 +61,7 @@ class BatchClient:
         redis_client: Optional[redis.Redis] = None,
         # Legacy: accept access_token for backward compat
         access_token: str = "",
+        batch_size: Optional[int] = None,
     ):
         if token_provider is not None:
             self._token_provider = token_provider
@@ -69,6 +70,7 @@ class BatchClient:
             self._token_provider = lambda: access_token
         self.redis_client = redis_client or redis.from_url(REDIS_URL)
         self.batch_url = f"{GRAPH_API_BASE}/$batch"
+        self.batch_size = batch_size if batch_size is not None else BATCH_SIZE
 
     def add_action(self, action: dict) -> None:
         """
@@ -88,7 +90,7 @@ class BatchClient:
 
         # Auto-flush if buffer is full
         buffer_size = self.redis_client.llen(BATCH_BUFFER_KEY)
-        if buffer_size >= BATCH_SIZE:
+        if buffer_size >= self.batch_size:
             logger.info("Batch buffer full (%d items), flushing", buffer_size)
             self.flush()
 
@@ -99,10 +101,10 @@ class BatchClient:
         Returns:
             List of individual response dicts from the batch response.
         """
-        # Pop up to BATCH_SIZE items from the buffer
+        # Pop up to batch_size items from the buffer
         pipe = self.redis_client.pipeline()
-        pipe.lrange(BATCH_BUFFER_KEY, -BATCH_SIZE, -1)
-        pipe.ltrim(BATCH_BUFFER_KEY, 0, -(BATCH_SIZE + 1))
+        pipe.lrange(BATCH_BUFFER_KEY, -self.batch_size, -1)
+        pipe.ltrim(BATCH_BUFFER_KEY, 0, -(self.batch_size + 1))
         results = pipe.execute()
 
         raw_actions = results[0]
@@ -180,3 +182,6 @@ class BatchClient:
     def buffer_size(self) -> int:
         """Return the current number of buffered actions."""
         return self.redis_client.llen(BATCH_BUFFER_KEY)
+
+    # Alias for backward compatibility with tests
+    add = add_action

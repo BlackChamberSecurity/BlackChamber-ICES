@@ -160,3 +160,27 @@ class BECSignals:
     is_first_contact: bool = False
     low_volume_sensitive_request: bool = False
     context_escalation: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Granular content signals (Abnormal-style)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ContentSignals:
+    """Fine-grained content analysis signals extracted via regex + NLP.
+
+    These complement the document-level intent classification with
+    keyword-level evidence that boosts confidence and catches things
+    NLP misses (e.g. routing numbers, explicit payment instructions).
+    """
+
+    has_financial_entities: bool = False
+    has_payment_instructions: bool = False
+    has_urgency_language: bool = False
+    has_credential_request: bool = False
+    has_personal_info_request: bool = False
+    urgency_score: int = 0           # 0-100 keyword density score
+    formality_score: int = 50        # 0-100 (0=very informal, 100=very formal)
+    financial_entities: list[str] = field(default_factory=list)
+    topics_detected: list[str] = field(default_factory=list)

@@ -18,16 +18,17 @@ from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
 
 from analysis.models import EmailEvent, EmailBody, EmailAddress, Observation
-from analysis.analyzers.bec_models import (
+from analysis.analyzers.bec.models import (
     SenderProfile,
     SenderRecipientPair,
     BECSignals,
+    ContentSignals,
     INTENT_CATEGORIES,
     NLP_CANDIDATE_LABELS,
     CATEGORY_RISK_WEIGHTS,
     HIGH_RISK_CATEGORIES,
 )
-from analysis.analyzers.bec_analyzer import (
+from analysis.analyzers.bec.analyzer import (
     BECAnalyzer,
     _compute_risk_score,
     _risk_level,
@@ -36,6 +37,7 @@ from analysis.analyzers.bec_analyzer import (
     _detect_context_escalation,
     _sender_domain,
 )
+from analysis.analyzers.bec.signals import _scan_content_signals
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +260,7 @@ class TestBECAnalyzer:
     @patch.object(BECAnalyzer, "_get_pair", return_value=None)
     @patch.object(BECAnalyzer, "_get_profile", return_value=None)
     @patch(
-        "analysis.analyzers.bec_analyzer._get_nlp_classifier",
+        "analysis.analyzers.bec.analyzer._get_nlp_classifier",
         return_value=None,
     )
     def test_new_sender_no_nlp(self, mock_nlp, mock_profile, mock_pair, mock_dpair):
@@ -377,8 +379,8 @@ class TestBECAnalyzer:
         mock_dpair.return_value = None
         # Manually set intent to credential_request (NLP is off, so we patch)
         with patch.object(
-            self.analyzer, "_classify_intent",
-            return_value=("credential_request", 85),
+            self.analyzer, "_classify_intent_multilabel",
+            return_value=("credential_request", 85, ["credential_request"]),
         ):
             email = _make_email(subject="Verify your account credentials")
             result = self.analyzer.analyze(email)
@@ -395,8 +397,8 @@ class TestBECAnalyzer:
         "analysis.analyzers.bec_analyzer._get_nlp_classifier",
         return_value=None,
     )
-    def test_emits_all_13_observations(self, mock_nlp, mock_profile, mock_pair, mock_dpair):
-        """Verify the analyzer always emits exactly 13 observations."""
+    def test_emits_all_21_observations(self, mock_nlp, mock_profile, mock_pair, mock_dpair):
+        """Verify the analyzer always emits exactly 21 observations."""
         email = _make_email()
         result = self.analyzer.analyze(email)
         keys = {o.key for o in result.observations}
@@ -406,9 +408,14 @@ class TestBECAnalyzer:
             "display_name_anomaly", "category_shift", "time_anomaly",
             "reply_to_mismatch", "is_first_contact",
             "low_volume_sensitive_request", "context_escalation",
+            # Content signals
+            "content_has_financial_entities", "content_has_payment_instructions",
+            "content_has_urgency_language", "content_urgency_score",
+            "content_formality_score", "content_financial_entities",
+            "topics_detected", "content_has_personal_info",
         }
         assert keys == expected
-        assert len(result.observations) == 13
+        assert len(result.observations) == 21
 
     @patch.object(BECAnalyzer, "_get_domain_pair", return_value=None)
     @patch.object(BECAnalyzer, "_get_pair", return_value=None)
@@ -424,8 +431,90 @@ class TestBECAnalyzer:
         d = result.to_dict()
         assert d["analyzer"] == "bec_detector"
         assert isinstance(d["observations"], list)
-        assert len(d["observations"]) == 13
+        assert len(d["observations"]) == 21
         # Verify round-trip
         for obs_dict in d["observations"]:
             obs = Observation.from_dict(obs_dict)
             assert obs.key in {o.key for o in result.observations}
+
+
+# ---------------------------------------------------------------------------
+# Content signal tests
+# ---------------------------------------------------------------------------
+
+class TestContentSignals:
+
+    def test_financial_entity_extraction(self):
+        text = (
+            "Bank: Green Dot\n"
+            "Routing Number: 061000052\n"
+            "Account Number: 334070299722"
+        )
+        cs = _scan_content_signals(text)
+        assert cs.has_financial_entities is True
+        assert any("routing:061000052" in e for e in cs.financial_entities)
+        assert any("account:334070299722" in e for e in cs.financial_entities)
+        assert any("bank:" in e for e in cs.financial_entities)
+
+    def test_urgency_keywords(self):
+        text = "This is very urgent! Please act immediately, ASAP."
+        cs = _scan_content_signals(text)
+        assert cs.has_urgency_language is True
+        assert cs.urgency_score >= 40  # at least 2 hits × 20
+
+    def test_no_urgency(self):
+        text = "Here is the quarterly report for your review."
+        cs = _scan_content_signals(text)
+        assert cs.has_urgency_language is False
+        assert cs.urgency_score == 0
+
+    def test_payment_instructions(self):
+        text = (
+            "Please update the wire transfer details."
+            " New bank account number for payment."
+        )
+        cs = _scan_content_signals(text)
+        assert cs.has_payment_instructions is True
+
+    def test_credential_request(self):
+        text = "Please verify your account by entering your password."
+        cs = _scan_content_signals(text)
+        assert cs.has_credential_request is True
+
+    def test_personal_info_request(self):
+        text = "We need your SSN and date of birth to process the W-2."
+        cs = _scan_content_signals(text)
+        assert cs.has_personal_info_request is True
+
+    def test_formality_scoring(self):
+        formal_text = "Dear Sir, Please find attached. Sincerely, J."
+        cs = _scan_content_signals(formal_text)
+        assert cs.formality_score > 50
+
+        informal_text = "Hey! What's up, gonna send that btw lol"
+        cs2 = _scan_content_signals(informal_text)
+        assert cs2.formality_score < 50
+
+    def test_content_signals_boost_risk_score(self):
+        """Content signals add to risk score independently of NLP confidence."""
+        signals = BECSignals(
+            intent_category="informational", intent_confidence=50,
+        )
+        content = ContentSignals(
+            has_financial_entities=True,
+            has_payment_instructions=True,
+            has_urgency_language=True,
+        )
+        score_with = _compute_risk_score(signals, content)
+        score_without = _compute_risk_score(signals)
+        assert score_with > score_without
+        assert score_with - score_without >= 40  # 20 + 15 + 10 (minus rounding)
+
+    def test_neutral_text_no_flags(self):
+        text = "Meeting tomorrow at 3pm in conference room B."
+        cs = _scan_content_signals(text)
+        assert cs.has_financial_entities is False
+        assert cs.has_payment_instructions is False
+        assert cs.has_urgency_language is False
+        assert cs.has_credential_request is False
+        assert cs.has_personal_info_request is False

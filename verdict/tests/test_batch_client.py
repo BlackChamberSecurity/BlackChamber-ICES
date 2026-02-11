@@ -23,7 +23,7 @@ import pytest
 class TestBatchClientBuffer:
     """Test the buffering and flush mechanics."""
 
-    def _make_client(self, batch_size=20, redis_mock=None):
+    def _make_client(self, batch_size=20, redis_mock=None, pipeline_result=None):
         """Create a BatchClient with mocked dependencies."""
         from verdict.batch_client import BatchClient
 
@@ -31,8 +31,14 @@ class TestBatchClientBuffer:
             redis_mock = MagicMock()
             redis_mock.llen.return_value = 0
             redis_mock.lpush = MagicMock()
-            redis_mock.lrange.return_value = []
-            redis_mock.ltrim = MagicMock()
+
+        # Mock the pipeline — flush() uses pipe.lrange / pipe.ltrim / pipe.execute
+        pipe_mock = MagicMock()
+        if pipeline_result is not None:
+            pipe_mock.execute.return_value = pipeline_result
+        else:
+            pipe_mock.execute.return_value = [[], None]
+        redis_mock.pipeline.return_value = pipe_mock
 
         token_provider = MagicMock(return_value="test-token")
 
@@ -67,18 +73,17 @@ class TestBatchClientBuffer:
         result = client.flush()
         assert result == []
 
-    @patch("verdict.batch_client.httpx.Client")
-    def test_flush_sends_batch(self, mock_httpx_cls):
+    @patch("verdict.batch_client.httpx.post")
+    def test_flush_sends_batch(self, mock_post):
         """flush() sends buffered requests as a Graph API $batch call."""
-        client, redis_mock, token_provider = self._make_client()
-
-        # Pre-populate buffer
-        requests = [
-            json.dumps({"id": "1", "method": "POST", "url": "/test1"}),
-            json.dumps({"id": "2", "method": "PATCH", "url": "/test2"}),
+        # Pre-populate buffer via pipeline mock
+        buffered = [
+            json.dumps({"id": "1", "method": "POST", "url": "/test1"}).encode(),
+            json.dumps({"id": "2", "method": "PATCH", "url": "/test2"}).encode(),
         ]
-        redis_mock.lrange.return_value = [r.encode() for r in requests]
-        redis_mock.llen.return_value = 2
+        client, redis_mock, token_provider = self._make_client(
+            pipeline_result=[buffered, None],
+        )
 
         # Mock HTTP response
         mock_resp = MagicMock()
@@ -90,31 +95,23 @@ class TestBatchClientBuffer:
             ]
         }
         mock_resp.raise_for_status = MagicMock()
-
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.post.return_value = mock_resp
-        mock_httpx_cls.return_value = mock_client
+        mock_post.return_value = mock_resp
 
         result = client.flush()
 
         # Verify batch was sent
-        mock_client.post.assert_called_once()
-        call_kwargs = mock_client.post.call_args
-        assert "Authorization" in call_kwargs[1].get("headers", call_kwargs.kwargs.get("headers", {})) or True
+        mock_post.assert_called_once()
 
-    @patch("verdict.batch_client.httpx.Client")
-    def test_429_requeue(self, mock_httpx_cls):
+    @patch("verdict.batch_client.httpx.post")
+    def test_429_requeue(self, mock_post):
         """Sub-requests that get 429 are re-queued."""
-        client, redis_mock, _ = self._make_client()
-
-        requests = [
-            json.dumps({"id": "1", "method": "POST", "url": "/ok"}),
-            json.dumps({"id": "2", "method": "POST", "url": "/throttled"}),
+        buffered = [
+            json.dumps({"id": "1", "method": "POST", "url": "/ok"}).encode(),
+            json.dumps({"id": "2", "method": "POST", "url": "/throttled"}).encode(),
         ]
-        redis_mock.lrange.return_value = [r.encode() for r in requests]
-        redis_mock.llen.return_value = 2
+        client, redis_mock, _ = self._make_client(
+            pipeline_result=[buffered, None],
+        )
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -125,12 +122,7 @@ class TestBatchClientBuffer:
             ]
         }
         mock_resp.raise_for_status = MagicMock()
-
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.post.return_value = mock_resp
-        mock_httpx_cls.return_value = mock_client
+        mock_post.return_value = mock_resp
 
         result = client.flush()
 

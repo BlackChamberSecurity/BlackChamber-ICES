@@ -15,29 +15,25 @@
 """
 Analyzer: Business Email Compromise (BEC) Detection
 
-Abnormal Security-style behavioural analysis that compares each inbound
-email against learned sender and sender↔recipient baselines.
+Behavioural profiling + NLP intent classification + content signal
+scanning for detecting Business Email Compromise attempts.
 
-Pipeline:
-  1. Classify intent  — zero-shot NLP into 7 categories
-  2. Query profiles   — sender baseline + per-recipient pair history
-  3. Compute anomalies — flag deviations from learned behaviour
-  4. Score risk       — weighted composite 0–100
+Pipeline (read-only):
+  1. Content signal scan — regex-based entity + keyword extraction
+  2. NLP intent classification — multi-label zero-shot
+  3. Sender profile lookup — tenure, display names, category history
+  4. Sender-recipient pair queries — first contact, context escalation
+  5. Risk scoring — composite score from all signals
 
-Observations produced (13):
-    bec_risk_score              (numeric)   0–100
-    bec_risk_level              (text)      low / medium / high / critical
-    intent_category             (text)      detected intent
-    intent_confidence           (numeric)   NLP confidence 0–100
-    sender_tenure_days          (numeric)   days since first seen
-    is_new_sender               (boolean)   first seen < 7 days
-    display_name_anomaly        (boolean)   unknown display name
-    category_shift              (boolean)   intent differs from baseline
-    time_anomaly                (boolean)   sent outside typical hours
-    reply_to_mismatch           (boolean)   Reply-To ≠ sender domain
-    is_first_contact            (boolean)   sender→recipient never seen
-    low_volume_sensitive_request(boolean)   few msgs + high-risk intent
-    context_escalation          (boolean)   unusual category for this pair
+Observations produced (21 total):
+    bec_risk_score, bec_risk_level, intent_category, intent_confidence,
+    sender_tenure_days, is_new_sender, display_name_anomaly, category_shift,
+    time_anomaly, reply_to_mismatch, is_first_contact,
+    low_volume_sensitive_request, context_escalation,
+    content_has_financial_entities, content_has_payment_instructions,
+    content_has_urgency_language, content_urgency_score,
+    content_formality_score, content_financial_entities,
+    topics_detected, content_has_personal_info
 """
 import logging
 import math
@@ -47,15 +43,17 @@ from html.parser import HTMLParser
 from typing import Optional
 
 from analysis.analyzers._base import BaseAnalyzer
-from analysis.analyzers.bec_models import (
+from analysis.analyzers.bec.models import (
     BECSignals,
     CATEGORY_RISK_WEIGHTS,
+    ContentSignals,
     HIGH_RISK_CATEGORIES,
     INTENT_CATEGORIES,
     NLP_CANDIDATE_LABELS,
     SenderProfile,
     SenderRecipientPair,
 )
+from analysis.analyzers.bec.signals import _scan_content_signals
 from analysis.models import AnalysisResult, EmailEvent, Observation
 
 logger = logging.getLogger(__name__)
@@ -199,23 +197,46 @@ _SIGNAL_WEIGHTS = {
     "context_escalation": 15,
 }
 
+#: Weights for content signal flags (hard evidence).
+_CONTENT_SIGNAL_WEIGHTS = {
+    "has_financial_entities": 20,
+    "has_payment_instructions": 15,
+    "has_urgency_language": 10,
+    "has_credential_request": 15,
+    "has_personal_info_request": 10,
+}
 
-def _compute_risk_score(signals: BECSignals) -> int:
-    """Weighted composite BEC risk score 0–100."""
+
+def _compute_risk_score(
+    signals: BECSignals,
+    content: Optional[ContentSignals] = None,
+) -> int:
+    """Weighted composite BEC risk score 0–100.
+
+    Integrates behavioural anomaly flags with content-level evidence.
+    Content signals add directly (not dampened by NLP confidence)
+    because they represent hard regex evidence.
+    """
     raw = 0.0
 
     # Category base risk (0–30 points)
     cat_weight = CATEGORY_RISK_WEIGHTS.get(signals.intent_category, 0.1)
     raw += cat_weight * 30
 
-    # Anomaly flag contributions
+    # Behavioural anomaly flag contributions
     for flag_name, weight in _SIGNAL_WEIGHTS.items():
         if getattr(signals, flag_name, False):
             raw += weight
 
-    # Scale by intent confidence (low confidence → dampen score)
+    # Scale behavioural signals by intent confidence
     confidence_factor = max(signals.intent_confidence / 100.0, 0.3)
     raw *= confidence_factor
+
+    # Content signal contributions (NOT dampened — hard evidence)
+    if content:
+        for flag_name, weight in _CONTENT_SIGNAL_WEIGHTS.items():
+            if getattr(content, flag_name, False):
+                raw += weight
 
     return min(int(round(raw)), 100)
 
@@ -242,13 +263,25 @@ class BECAnalyzer(BaseAnalyzer):
     order = 45  # after headers/URLs/attachments, before SaaS NLP
 
     def analyze(self, email: EmailEvent) -> AnalysisResult:
-        """Read-only analysis: query profiles, classify intent, emit observations."""
+        """Read-only analysis: classify, scan content, query profiles, score."""
         signals = BECSignals()
 
-        # --- 1. Classify intent ---
-        signals.intent_category, signals.intent_confidence = self._classify_intent(email)
+        # --- 0. Extract body text once (shared by NLP + content scanner) ---
+        body_text = email.body.content or ""
+        if email.body.content_type == "html" or "<" in body_text[:50]:
+            body_text = _strip_html(body_text)
+        full_text = f"Subject: {email.subject or '(no subject)'}\n\n{body_text}"
 
-        # --- 2. Query sender profile ---
+        # --- 1. Scan content signals (regex, zero-cost) ---
+        content = _scan_content_signals(full_text)
+
+        # --- 2. Classify intent (NLP, multi-label) ---
+        signals.intent_category, signals.intent_confidence, topics = (
+            self._classify_intent_multilabel(full_text)
+        )
+        content.topics_detected = topics
+
+        # --- 3. Query sender profile ---
         domain = _sender_domain(email.sender)
         profile = self._get_profile(email.tenant_id, domain)
 
@@ -284,7 +317,7 @@ class BECAnalyzer(BaseAnalyzer):
                     if rt_domain not in profile.reply_to_domains:
                         signals.reply_to_mismatch = True
 
-        # --- 3. Query sender-recipient pairs (dual-level) ---
+        # --- 4. Query sender-recipient pairs (dual-level) ---
         sender_addr = email.sender.strip().lower()
         recipients = [r.address for r in email.to] if email.to else []
         for recip in recipients:
@@ -323,8 +356,8 @@ class BECAnalyzer(BaseAnalyzer):
                 if _detect_context_escalation(domain_pair, signals.intent_category):
                     signals.context_escalation = True
 
-        # --- 4. Score and emit ---
-        score = _compute_risk_score(signals)
+        # --- 5. Score and emit ---
+        score = _compute_risk_score(signals, content)
         level = _risk_level(score)
 
         observations = [
@@ -341,33 +374,64 @@ class BECAnalyzer(BaseAnalyzer):
             Observation(key="is_first_contact", value=signals.is_first_contact, type="boolean"),
             Observation(key="low_volume_sensitive_request", value=signals.low_volume_sensitive_request, type="boolean"),
             Observation(key="context_escalation", value=signals.context_escalation, type="boolean"),
+            # --- Content signals (Abnormal-style) ---
+            Observation(key="content_has_financial_entities", value=content.has_financial_entities, type="boolean"),
+            Observation(key="content_has_payment_instructions", value=content.has_payment_instructions, type="boolean"),
+            Observation(key="content_has_urgency_language", value=content.has_urgency_language, type="boolean"),
+            Observation(key="content_urgency_score", value=content.urgency_score, type="numeric"),
+            Observation(key="content_formality_score", value=content.formality_score, type="numeric"),
+            Observation(
+                key="content_financial_entities",
+                value=", ".join(content.financial_entities) if content.financial_entities else "none",
+                type="text",
+            ),
+            Observation(
+                key="topics_detected",
+                value=", ".join(content.topics_detected) if content.topics_detected else signals.intent_category,
+                type="text",
+            ),
+            Observation(key="content_has_personal_info", value=content.has_personal_info_request, type="boolean"),
         ]
 
         return AnalysisResult(analyzer=self.name, observations=observations)
 
-    # ----- Intent classification -----
+    # ----- Intent classification (multi-label) -----
 
-    def _classify_intent(self, email: EmailEvent) -> tuple[str, int]:
-        """Zero-shot classify the email into one of 7 intent categories."""
+    def _classify_intent_multilabel(
+        self, text: str,
+    ) -> tuple[str, int, list[str]]:
+        """Multi-label zero-shot classify into intent categories.
+
+        Returns (top_category, confidence_0_100, list_of_topics_above_threshold).
+        """
         classifier = _get_nlp_classifier()
         if classifier is None:
-            return "informational", 0
+            return "informational", 0, []
 
-        body_text = email.body.content or ""
-        if email.body.content_type == "html" or "<" in body_text[:50]:
-            body_text = _strip_html(body_text)
-
-        text = f"Subject: {email.subject or '(no subject)'}\n\n"
-        text += body_text[:500]
+        analysis_text = text[:500]
 
         try:
-            result = classifier(text, NLP_CANDIDATE_LABELS, multi_label=False)
-            top_idx = NLP_CANDIDATE_LABELS.index(result["labels"][0])
-            top_score = result["scores"][0]
-            return INTENT_CATEGORIES[top_idx], int(top_score * 100)
+            result = classifier(
+                analysis_text, NLP_CANDIDATE_LABELS, multi_label=True,
+            )
+            # Map labels back to category names
+            topics: list[str] = []
+            top_category = "informational"
+            top_score = 0.0
+
+            for label, score in zip(result["labels"], result["scores"]):
+                idx = NLP_CANDIDATE_LABELS.index(label)
+                cat = INTENT_CATEGORIES[idx]
+                if score > top_score:
+                    top_score = score
+                    top_category = cat
+                if score > 0.3:  # multi-label threshold
+                    topics.append(cat)
+
+            return top_category, int(top_score * 100), topics
         except Exception as exc:
             logger.warning("BEC intent classification failed: %s", exc)
-            return "informational", 0
+            return "informational", 0, []
 
     # ----- Profile queries (read-only, best-effort) -----
 
@@ -375,7 +439,7 @@ class BECAnalyzer(BaseAnalyzer):
         self, tenant_id: str, sender_domain: str,
     ) -> Optional[SenderProfile]:
         try:
-            from analysis.analyzers.bec_db import init_bec_schema, get_sender_profile
+            from analysis.analyzers.bec.db import init_bec_schema, get_sender_profile
             from ices_shared.db import get_connection
             init_bec_schema()
             with get_connection() as conn:
@@ -388,7 +452,7 @@ class BECAnalyzer(BaseAnalyzer):
         self, tenant_id: str, sender_addr: str, recipient: str,
     ) -> Optional[SenderRecipientPair]:
         try:
-            from analysis.analyzers.bec_db import init_bec_schema, get_sender_recipient_pair
+            from analysis.analyzers.bec.db import init_bec_schema, get_sender_recipient_pair
             from ices_shared.db import get_connection
             init_bec_schema()
             with get_connection() as conn:
@@ -403,7 +467,7 @@ class BECAnalyzer(BaseAnalyzer):
         self, tenant_id: str, sender_domain: str, recipient: str,
     ) -> Optional[SenderRecipientPair]:
         try:
-            from analysis.analyzers.bec_db import init_bec_schema, get_domain_pair_summary
+            from analysis.analyzers.bec.db import init_bec_schema, get_domain_pair_summary
             from ices_shared.db import get_connection
             init_bec_schema()
             with get_connection() as conn:
@@ -438,7 +502,7 @@ def update_behavioral_profiles(email: EmailEvent, verdict) -> None:
     This runs as a best-effort side-effect AFTER the verdict is produced,
     keeping the analyze() path read-only.
     """
-    from analysis.analyzers.bec_db import (
+    from analysis.analyzers.bec.db import (
         init_bec_schema,
         upsert_sender_profile,
         upsert_sender_recipient_pair,

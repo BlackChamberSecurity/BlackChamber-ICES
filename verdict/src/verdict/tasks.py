@@ -51,7 +51,8 @@ def _get_dispatcher() -> Dispatcher:
     if _dispatcher is None:
         policies = _load_policies()
         engine = PolicyEngine(policies)
-        _dispatcher = Dispatcher(engine)
+        manager = _get_token_manager()
+        _dispatcher = Dispatcher(engine, token_provider=manager.get_token)
     return _dispatcher
 
 
@@ -156,7 +157,8 @@ def execute_verdict(self, verdict_json: str):
         if result is None:
             return {"message_id": verdict.message_id, "action": "none"}
 
-        # Buffer the request for batch execution
+        # Direct actions (e.g. Defender quarantine) are already executed
+        # by the Dispatcher — only batch actions need buffering.
         request = result.get("request")
         if request:
             batch_client = _get_batch_client()

@@ -85,5 +85,21 @@ policies:
       exists: true
     action: quarantine
 
+  - name: quarantine-bec-critical
+    tenant: "*"
+    when:
+      analyzer: bec_detector
+      observation: bec_risk_score
+      gte: 75
+    action: quarantine
+
+  - name: quarantine-spamhaus-ip
+    tenant: "*"
+    when:
+      analyzer: spamhaus
+      observation: ip_listed
+      equals: true
+    action: quarantine
+
   # SaaS usage has no security policy — informational only.
   # All observations are persisted to Postgres for reporting.
