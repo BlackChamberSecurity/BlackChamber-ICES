@@ -276,7 +276,7 @@ class TestBECAnalyzer:
     @patch.object(BECAnalyzer, "_get_pair", return_value=None)
     @patch.object(BECAnalyzer, "_get_profile")
     @patch(
-        "analysis.analyzers.bec_analyzer._get_nlp_classifier",
+        "analysis.analyzers.bec.analyzer._get_nlp_classifier",
         return_value=None,
     )
     def test_known_sender_normal_email(self, mock_nlp, mock_profile, mock_pair, mock_dpair):
@@ -291,7 +291,7 @@ class TestBECAnalyzer:
     @patch.object(BECAnalyzer, "_get_domain_pair", return_value=None)
     @patch.object(BECAnalyzer, "_get_pair", return_value=None)
     @patch.object(BECAnalyzer, "_get_profile")
-    @patch("analysis.analyzers.bec_analyzer._get_nlp_classifier")
+    @patch("analysis.analyzers.bec.analyzer._get_nlp_classifier")
     def test_category_shift_detected(self, mock_nlp_fn, mock_profile, mock_pair, mock_dpair):
         """Known sender sends a rare financial request → category shift."""
         # NLP returns "financial_request"
@@ -315,7 +315,7 @@ class TestBECAnalyzer:
     @patch.object(BECAnalyzer, "_get_pair", return_value=None)
     @patch.object(BECAnalyzer, "_get_profile")
     @patch(
-        "analysis.analyzers.bec_analyzer._get_nlp_classifier",
+        "analysis.analyzers.bec.analyzer._get_nlp_classifier",
         return_value=None,
     )
     def test_display_name_anomaly(self, mock_nlp, mock_profile, mock_pair, mock_dpair):
@@ -331,7 +331,7 @@ class TestBECAnalyzer:
     @patch.object(BECAnalyzer, "_get_pair", return_value=None)
     @patch.object(BECAnalyzer, "_get_profile")
     @patch(
-        "analysis.analyzers.bec_analyzer._get_nlp_classifier",
+        "analysis.analyzers.bec.analyzer._get_nlp_classifier",
         return_value=None,
     )
     def test_reply_to_mismatch(self, mock_nlp, mock_profile, mock_pair, mock_dpair):
@@ -346,7 +346,7 @@ class TestBECAnalyzer:
     @patch.object(BECAnalyzer, "_get_domain_pair", return_value=None)
     @patch.object(BECAnalyzer, "_get_pair")
     @patch.object(BECAnalyzer, "_get_profile", return_value=None)
-    @patch("analysis.analyzers.bec_analyzer._get_nlp_classifier")
+    @patch("analysis.analyzers.bec.analyzer._get_nlp_classifier")
     def test_first_contact_sensitive_request(self, mock_nlp_fn, mock_profile, mock_pair, mock_dpair):
         """First contact + urgent intent → low_volume_sensitive_request."""
         mock_classifier = MagicMock()
@@ -367,7 +367,7 @@ class TestBECAnalyzer:
     @patch.object(BECAnalyzer, "_get_pair")
     @patch.object(BECAnalyzer, "_get_profile")
     @patch(
-        "analysis.analyzers.bec_analyzer._get_nlp_classifier",
+        "analysis.analyzers.bec.analyzer._get_nlp_classifier",
         return_value=None,
     )
     def test_context_escalation(self, mock_nlp, mock_profile, mock_pair, mock_dpair):
@@ -394,7 +394,7 @@ class TestBECAnalyzer:
     @patch.object(BECAnalyzer, "_get_pair", return_value=None)
     @patch.object(BECAnalyzer, "_get_profile", return_value=None)
     @patch(
-        "analysis.analyzers.bec_analyzer._get_nlp_classifier",
+        "analysis.analyzers.bec.analyzer._get_nlp_classifier",
         return_value=None,
     )
     def test_emits_all_21_observations(self, mock_nlp, mock_profile, mock_pair, mock_dpair):
@@ -421,7 +421,7 @@ class TestBECAnalyzer:
     @patch.object(BECAnalyzer, "_get_pair", return_value=None)
     @patch.object(BECAnalyzer, "_get_profile", return_value=None)
     @patch(
-        "analysis.analyzers.bec_analyzer._get_nlp_classifier",
+        "analysis.analyzers.bec.analyzer._get_nlp_classifier",
         return_value=None,
     )
     def test_serialization_round_trip(self, mock_nlp, mock_profile, mock_pair, mock_dpair):
