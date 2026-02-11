@@ -53,6 +53,16 @@ def analyze_email(self, email_event_json: str):
             email.sender, email.subject,
         )
 
+        # Skip if already processed — saves bandwidth
+        try:
+            from ices_shared.db import get_connection, is_message_processed
+            with get_connection() as conn:
+                if is_message_processed(conn, email.message_id):
+                    logger.info("Skipping already-processed message: %s", email.message_id)
+                    return {"message_id": email.message_id, "status": "already_processed"}
+        except Exception:
+            pass  # If DB check fails, proceed with processing
+
         # Run all analyzers
         verdict = run_pipeline(email)
         verdict_dict = verdict.to_dict()

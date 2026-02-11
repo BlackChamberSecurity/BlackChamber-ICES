@@ -123,6 +123,16 @@ def execute_verdict(self, verdict_json: str):
             verdict.message_id, len(verdict.results), verdict.sender,
         )
 
+        # Skip if already processed — prevents duplicate Graph API actions
+        try:
+            from ices_shared.db import get_connection, is_message_processed
+            with get_connection() as conn:
+                if is_message_processed(conn, verdict.message_id):
+                    logger.info("Skipping already-processed verdict: %s", verdict.message_id)
+                    return {"message_id": verdict.message_id, "status": "already_processed"}
+        except Exception:
+            pass  # If DB check fails, proceed with processing
+
         dispatcher = _get_dispatcher()
         result = dispatcher.dispatch(verdict)
 

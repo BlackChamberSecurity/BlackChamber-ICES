@@ -13,7 +13,9 @@
 services:
   # --- Analysis Engine Tests ---
   analysis-test:
-    build: ./analysis
+    build:
+      context: .
+      dockerfile: analysis/Dockerfile
     command: pytest tests/ -v --tb=short
     environment:
       - REDIS_URL=redis://redis:6379/0
@@ -23,12 +25,17 @@ services:
 
   # --- Verdict Worker Tests ---
   verdict-test:
-    build: ./verdict
+    build:
+      context: .
+      dockerfile: verdict/Dockerfile
     command: pytest tests/ -v --tb=short
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://ices:ices_dev@postgres-test:5432/ices
     depends_on:
       redis:
+        condition: service_healthy
+      postgres-test:
         condition: service_healthy
 
   # --- Go Ingestion Tests (uses multi-stage build) ---
@@ -42,6 +49,19 @@ services:
     image: redis:7-alpine
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+
+  # --- Postgres (needed by DB dedup tests) ---
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ices
+      POSTGRES_PASSWORD: ices_dev
+      POSTGRES_DB: ices
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ices" ]
       interval: 2s
       timeout: 2s
       retries: 5
