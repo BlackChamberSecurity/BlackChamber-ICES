@@ -81,6 +81,13 @@ def analyze_email(self, email_event_json: str):
         except Exception as db_exc:
             logger.warning("Postgres write failed (non-fatal): %s", db_exc)
 
+        # --- Update BEC behavioral models (best-effort, non-fatal) ---
+        try:
+            from analysis.analyzers.bec_analyzer import update_behavioral_profiles
+            update_behavioral_profiles(email, verdict)
+        except Exception as bec_exc:
+            logger.warning("BEC profile update failed (non-fatal): %s", bec_exc)
+
         # --- Dual-write: Redis queue ---
         app.send_task(
             "verdict.tasks.execute_verdict",
