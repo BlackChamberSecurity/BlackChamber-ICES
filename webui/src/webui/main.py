@@ -31,8 +31,15 @@ from pydantic import BaseModel
 
 from webui.auth import authenticate, verify_token
 from webui.queries import get_message_trip, get_saas_analytics, get_stats, list_messages
+from webui.security import RateLimiter
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Rate Limiters
+# ---------------------------------------------------------------------------
+
+login_limiter = RateLimiter(limit=5, window_seconds=60)
 
 # ---------------------------------------------------------------------------
 # App
@@ -76,7 +83,7 @@ class LoginRequest(BaseModel):
     password: str
 
 
-@app.post("/api/login")
+@app.post("/api/login", dependencies=[Depends(login_limiter)])
 async def login(body: LoginRequest):
     token = authenticate(body.username, body.password)
     if not token:
