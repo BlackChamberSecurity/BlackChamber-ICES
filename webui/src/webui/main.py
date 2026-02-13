@@ -31,6 +31,7 @@ from pydantic import BaseModel
 
 from webui.auth import authenticate, verify_token
 from webui.queries import get_message_trip, get_saas_analytics, get_stats, list_messages
+from webui.security import RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,17 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 PUBLIC_PATHS = {"/api/login", "/api/docs", "/api/openapi.json"}
+
+# Rate limiter for login: 5 attempts per minute per IP
+login_limiter = RateLimiter(limit=5, window_seconds=60)
+
+
+async def check_login_rate_limit(request: Request):
+    """Dependency to check rate limits for login attempts."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not login_limiter.is_allowed(client_ip):
+        logger.warning("Rate limit exceeded for IP: %s", client_ip)
+        raise HTTPException(status_code=429, detail="Too many login attempts. Please try again later.")
 
 
 async def get_current_user(request: Request) -> str:
@@ -76,7 +88,7 @@ class LoginRequest(BaseModel):
     password: str
 
 
-@app.post("/api/login")
+@app.post("/api/login", dependencies=[Depends(check_login_rate_limit)])
 async def login(body: LoginRequest):
     token = authenticate(body.username, body.password)
     if not token:
