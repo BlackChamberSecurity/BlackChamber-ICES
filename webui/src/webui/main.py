@@ -31,6 +31,7 @@ from pydantic import BaseModel
 
 from webui.auth import authenticate, verify_token
 from webui.queries import get_message_trip, get_saas_analytics, get_stats, list_messages
+from webui.security import RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +77,17 @@ class LoginRequest(BaseModel):
     password: str
 
 
+# Rate limit login attempts: 5 requests per 60 seconds
+login_limiter = RateLimiter(requests=5, window=60)
+
+
 @app.post("/api/login")
-async def login(body: LoginRequest):
+async def login(request: Request, body: LoginRequest):
+    # Enforce rate limit
+    client_ip = request.client.host if request.client else "unknown"
+    if not login_limiter.check(client_ip):
+        raise HTTPException(status_code=429, detail="Too Many Requests")
+
     token = authenticate(body.username, body.password)
     if not token:
         raise HTTPException(401, "Invalid credentials")
