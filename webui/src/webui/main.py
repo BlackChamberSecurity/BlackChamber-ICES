@@ -31,6 +31,7 @@ from pydantic import BaseModel
 
 from webui.auth import authenticate, verify_token
 from webui.queries import get_message_trip, get_saas_analytics, get_stats, list_messages
+from webui.security import RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +77,12 @@ class LoginRequest(BaseModel):
     password: str
 
 
+login_limiter = RateLimiter(requests_per_minute=5)
+
+
 @app.post("/api/login")
-async def login(body: LoginRequest):
+async def login(request: Request, body: LoginRequest):
+    login_limiter.check(request)
     token = authenticate(body.username, body.password)
     if not token:
         raise HTTPException(401, "Invalid credentials")
