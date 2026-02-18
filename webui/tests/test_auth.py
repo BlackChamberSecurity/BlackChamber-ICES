@@ -1,6 +1,6 @@
 import os
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # Mock jose module before importing webui.auth
 sys.modules["jose"] = MagicMock()
@@ -15,22 +15,31 @@ from webui.auth import authenticate, create_token
 # Mock create_token to return a dummy token instead of failing due to missing jose
 # We need to patch it in the module where it is defined
 import webui.auth
+import unittest
+
 webui.auth.create_token = lambda username: f"dummy_token_{username}"
 
-def test_authenticate():
-    # Test valid credentials (default)
-    token = authenticate("admin", "changeme")
-    assert token == "dummy_token_admin", f"Authentication failed with valid credentials, got {token}"
+class TestAuth(unittest.TestCase):
+    def test_authenticate(self):
+        # Test secure default: authentication should fail if env vars are missing
+        # We simulate missing env vars by patching the module variables
+        with patch("webui.auth.ADMIN_USER", None), patch("webui.auth.ADMIN_PASSWORD", None):
+            token = authenticate("admin", "changeme")
+            self.assertIsNone(token, "Authentication succeeded despite missing configuration")
 
-    # Test invalid username
-    token = authenticate("wronguser", "changeme")
-    assert token is None, "Authentication succeeded with invalid username"
+        # Test with configured credentials
+        with patch("webui.auth.ADMIN_USER", "admin"), patch("webui.auth.ADMIN_PASSWORD", "changeme"):
+            # Test valid credentials
+            token = authenticate("admin", "changeme")
+            self.assertEqual(token, "dummy_token_admin", f"Authentication failed with valid credentials, got {token}")
 
-    # Test invalid password
-    token = authenticate("admin", "wrongpass")
-    assert token is None, "Authentication succeeded with invalid password"
+            # Test invalid username
+            token = authenticate("wronguser", "changeme")
+            self.assertIsNone(token, "Authentication succeeded with invalid username")
 
-    print("All tests passed!")
+            # Test invalid password
+            token = authenticate("admin", "wrongpass")
+            self.assertIsNone(token, "Authentication succeeded with invalid password")
 
 if __name__ == "__main__":
-    test_authenticate()
+    unittest.main()

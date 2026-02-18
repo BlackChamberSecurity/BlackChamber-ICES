@@ -31,8 +31,11 @@ from pydantic import BaseModel
 
 from webui.auth import authenticate, verify_token
 from webui.queries import get_message_trip, get_saas_analytics, get_stats, list_messages
+from webui.security import RateLimiter
 
 logger = logging.getLogger(__name__)
+
+login_limiter = RateLimiter(requests_per_minute=5)
 
 # ---------------------------------------------------------------------------
 # App
@@ -77,7 +80,12 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/api/login")
-async def login(body: LoginRequest):
+async def login(request: Request, body: LoginRequest):
+    ip = request.client.host if request.client else "unknown"
+    if not login_limiter.check(ip):
+        logger.warning(f"Rate limit exceeded for login from {ip}")
+        raise HTTPException(status_code=429, detail="Too many login attempts. Please try again later.")
+
     token = authenticate(body.username, body.password)
     if not token:
         raise HTTPException(401, "Invalid credentials")

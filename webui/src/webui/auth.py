@@ -33,8 +33,8 @@ SECRET_KEY = os.environ.get("WEBUI_JWT_SECRET", secrets.token_urlsafe(32))
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 24
 
-ADMIN_USER = os.environ.get("WEBUI_ADMIN_USER", "admin")
-ADMIN_PASSWORD = os.environ.get("WEBUI_ADMIN_PASSWORD", "changeme")
+ADMIN_USER = os.environ.get("WEBUI_ADMIN_USER")
+ADMIN_PASSWORD = os.environ.get("WEBUI_ADMIN_PASSWORD")
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +61,8 @@ def verify_token(token: str) -> dict:
 
 def authenticate(username: str, password: str) -> str | None:
     """Validate credentials and return a JWT, or None on failure."""
+    if not ADMIN_USER or not ADMIN_PASSWORD:
+        return None
     if secrets.compare_digest(username, ADMIN_USER) and secrets.compare_digest(password, ADMIN_PASSWORD):
         return create_token(username)
     return None
