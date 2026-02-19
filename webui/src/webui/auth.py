@@ -34,7 +34,13 @@ ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 24
 
 ADMIN_USER = os.environ.get("WEBUI_ADMIN_USER", "admin")
-ADMIN_PASSWORD = os.environ.get("WEBUI_ADMIN_PASSWORD", "changeme")
+ADMIN_PASSWORD = os.environ.get("WEBUI_ADMIN_PASSWORD")
+
+if not ADMIN_PASSWORD:
+    raise ValueError(
+        "WEBUI_ADMIN_PASSWORD environment variable is not set. "
+        "For security, you must provide a strong password via this environment variable."
+    )
 
 
 # ---------------------------------------------------------------------------
