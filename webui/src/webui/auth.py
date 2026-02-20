@@ -29,12 +29,15 @@ from jose import JWTError, jwt
 # Configuration
 # ---------------------------------------------------------------------------
 
-SECRET_KEY = os.environ.get("WEBUI_JWT_SECRET", secrets.token_urlsafe(32))
+SECRET_KEY = os.environ.get("WEBUI_JWT_SECRET") or secrets.token_urlsafe(32)
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 24
 
-ADMIN_USER = os.environ.get("WEBUI_ADMIN_USER", "admin")
-ADMIN_PASSWORD = os.environ.get("WEBUI_ADMIN_PASSWORD", "changeme")
+ADMIN_USER = os.environ.get("WEBUI_ADMIN_USER")
+ADMIN_PASSWORD = os.environ.get("WEBUI_ADMIN_PASSWORD")
+
+if not ADMIN_USER or not ADMIN_PASSWORD:
+    raise ValueError("WEBUI_ADMIN_USER and WEBUI_ADMIN_PASSWORD environment variables must be set.")
 
 
 # ---------------------------------------------------------------------------

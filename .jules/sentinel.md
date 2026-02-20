@@ -1,0 +1,4 @@
+## 2026-05-15 - Hardcoded Default Credentials
+**Vulnerability:** The `webui/src/webui/auth.py` file contained hardcoded default credentials ("admin" / "changeme") for the administrator account. This allowed anyone to access the admin panel if the user did not explicitly set environment variables.
+**Learning:** Default values in code, especially for authentication, are dangerous because they provide a fallback that is often insecure. Users might deploy the application assuming it's secure by default or forget to configure it.
+**Prevention:** Do not provide default values for sensitive configuration. Instead, raise an error if the configuration is missing, forcing the user to provide it ("Fail Secure"). Also ensure that "optional" secrets like JWT keys do not default to empty strings if the environment variable is present but empty.
