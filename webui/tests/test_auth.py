@@ -2,6 +2,10 @@ import os
 import sys
 from unittest.mock import MagicMock
 
+# Set environment variables for auth module (must be done before import)
+os.environ["WEBUI_ADMIN_USER"] = "admin"
+os.environ["WEBUI_ADMIN_PASSWORD"] = "changeme"
+
 # Mock jose module before importing webui.auth
 sys.modules["jose"] = MagicMock()
 sys.modules["jose.jwt"] = MagicMock()
