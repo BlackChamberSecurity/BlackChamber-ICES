@@ -10,6 +10,10 @@ sys.modules["jose.JWTError"] = Exception
 # Ensure the module can be found
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 
+# Set required environment variables for testing
+os.environ["WEBUI_ADMIN_USER"] = "admin"
+os.environ["WEBUI_ADMIN_PASSWORD"] = "changeme"
+
 from webui.auth import authenticate, create_token
 
 # Mock create_token to return a dummy token instead of failing due to missing jose
