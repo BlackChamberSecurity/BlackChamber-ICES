@@ -124,6 +124,13 @@ M365_CLIENT_ID=your-client-id
 M365_CLIENT_SECRET=your-client-secret
 ```
 
+Set your WebUI admin credentials:
+
+```env
+WEBUI_ADMIN_USER=admin
+WEBUI_ADMIN_PASSWORD=change_this_password
+```
+
 Edit `config/config.yaml` to configure tenants, users, and policies.
 
 ### 2. Start
@@ -138,7 +145,7 @@ docker compose --profile dev up -d
 
 ### 3. Access the Dashboard
 
-Open [http://localhost:8090](http://localhost:8090) and log in with the admin credentials from `.env` (default: `admin` / `changeme`).
+Open [http://localhost:8090](http://localhost:8090) and log in with the admin credentials you configured in `.env`.
 
 ### 4. Backfill Historical Emails (Optional)
 
