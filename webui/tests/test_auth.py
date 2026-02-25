@@ -7,6 +7,10 @@ sys.modules["jose"] = MagicMock()
 sys.modules["jose.jwt"] = MagicMock()
 sys.modules["jose.JWTError"] = Exception
 
+# Set required environment variables before importing webui.auth
+os.environ["WEBUI_ADMIN_USER"] = "admin"
+os.environ["WEBUI_ADMIN_PASSWORD"] = "changeme"
+
 # Ensure the module can be found
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 
