@@ -137,8 +137,8 @@ if STATIC_DIR.is_dir():
     async def spa_catchall(path: str):
         """Serve the React SPA for all non-API routes."""
         # Try to serve the exact file first (e.g. favicon.ico, vite.svg)
-        file = STATIC_DIR / path
-        if path and file.is_file():
+        file = (STATIC_DIR / path).resolve()
+        if path and file.is_file() and file.is_relative_to(STATIC_DIR.resolve()):
             return FileResponse(file)
         # Otherwise serve index.html (client-side routing)
         return FileResponse(STATIC_DIR / "index.html")
